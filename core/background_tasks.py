@@ -11,6 +11,7 @@ import os
 from core.database import get_database_service
 from core.api_config import APIConfiguration
 from core.template_generator import TemplateGenerator
+from core.redis_cache import get_cache_service, refresh_user_cache_sync
 from celery_tasks import start_file_processing_pipeline
 
 logger.add("logs/background_tasks.log", rotation="10 MB", level="DEBUG")
@@ -537,6 +538,203 @@ async def get_template_generation_status(job_id: str) -> Dict[str, Any]:
     """Get template generation job status"""
     manager = get_template_job_manager()
     return await manager.get_job_status(job_id)
+
+# ============================================================================
+# CACHE REFRESH BACKGROUND TASK
+# ============================================================================
+
+class CacheRefreshManager:
+    """Manages cache refresh operations"""
+    
+    def __init__(self):
+        self.db = get_database_service()
+        self.is_running = False
+        self._stop_event = threading.Event()
+        
+    async def start_periodic_refresh(self):
+        """Start periodic cache refresh (every 5 minutes)"""
+        if self.is_running:
+            logger.warning("Cache refresh manager already running")
+            return
+            
+        self.is_running = True
+        logger.info("🕒 Starting periodic cache refresh (every 5 minutes)")
+        
+        def background_refresh():
+            while not self._stop_event.is_set():
+                try:
+                    # Sleep for 5 minutes (300 seconds)
+                    if self._stop_event.wait(300):  # 300 seconds = 5 minutes
+                        break
+                        
+                    logger.info("🔄 Starting periodic cache refresh")
+                    # Run cache refresh in thread pool
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                        future = executor.submit(self._refresh_all_user_caches_sync)
+                        try:
+                            result = future.result(timeout=120)  # 2 minute timeout
+                            logger.info(f"✅ Periodic cache refresh completed: {result}")
+                        except concurrent.futures.TimeoutError:
+                            logger.error("❌ Cache refresh timed out")
+                        except Exception as e:
+                            logger.error(f"❌ Cache refresh failed: {e}")
+                            
+                except Exception as e:
+                    logger.error(f"Error in cache refresh loop: {e}")
+        
+        # Start background thread
+        self.refresh_thread = threading.Thread(target=background_refresh, daemon=True)
+        self.refresh_thread.start()
+        
+    def stop_periodic_refresh(self):
+        """Stop periodic cache refresh"""
+        if not self.is_running:
+            return
+            
+        logger.info("🛑 Stopping periodic cache refresh")
+        self.is_running = False
+        self._stop_event.set()
+        
+        if hasattr(self, 'refresh_thread'):
+            self.refresh_thread.join(timeout=5)
+            
+    def _refresh_all_user_caches_sync(self) -> Dict[str, Any]:
+        """Refresh cache for all users (synchronous version for background thread)"""
+        try:
+            # Get all unique users with templates
+            from supabase import create_client
+            import os
+            
+            # Create sync client for this operation
+            SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://knqkunivquuuvnfwrqrn.supabase.co')
+            SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtucWt1bml2cXV1dXZuZndycXJuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0OTY5NjY2NSwiZXhwIjoyMDY1MjcyNjY1fQ.axhQBEv4lAnxmqkIDIKT8O72QwX6ypFk04do5eAPKdw')
+            
+            client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+            
+            # Get unique user IDs from folders table
+            users_response = client.table("folders").select("user_id").execute()
+            
+            if not users_response.data:
+                return {"refreshed_users": 0, "errors": 0}
+                
+            # Get unique user IDs
+            user_ids = list(set([user["user_id"] for user in users_response.data if user.get("user_id")]))
+            
+            refreshed_count = 0
+            error_count = 0
+            
+            for user_id in user_ids:
+                try:
+                    # Fetch fresh templates for this user
+                    templates_data = self._fetch_user_templates_sync(user_id, client)
+                    
+                    if templates_data:
+                        # Refresh cache
+                        success = refresh_user_cache_sync(user_id, templates_data)
+                        if success:
+                            refreshed_count += 1
+                            logger.debug(f"Cache refreshed for user {user_id}: {len(templates_data)} templates")
+                        else:
+                            error_count += 1
+                            logger.warning(f"Failed to refresh cache for user {user_id}")
+                    else:
+                        # User has no templates, clear cache if exists
+                        from core.redis_cache import invalidate_user_cache_sync
+                        invalidate_user_cache_sync(user_id)
+                        refreshed_count += 1
+                        
+                except Exception as e:
+                    logger.error(f"Error refreshing cache for user {user_id}: {e}")
+                    error_count += 1
+                    
+            logger.info(f"Cache refresh completed: {refreshed_count} users refreshed, {error_count} errors")
+            return {
+                "refreshed_users": refreshed_count,
+                "errors": error_count,
+                "total_users": len(user_ids)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in _refresh_all_user_caches_sync: {e}")
+            return {"refreshed_users": 0, "errors": 1, "error": str(e)}
+    
+    def _fetch_user_templates_sync(self, user_id: str, client) -> List[Dict[str, Any]]:
+        """Fetch templates for a user synchronously"""
+        try:
+            # Build the query
+            query = client.table("templates").select(
+                "*, folders(name, color), template_usage_stats(action_type, created_at)"
+            ).eq("folders.user_id", user_id)
+            
+            result = query.execute()
+            
+            if not result.data:
+                return []
+                
+            # Process results (similar to fetch_templates_from_db but sync)
+            templates = []
+            for item in result.data:
+                folder = item.get("folders", {})
+                usage_stats = item.get("template_usage_stats", [])
+
+                # Get most recent action
+                last_action = None
+                last_action_date = None
+                if usage_stats:
+                    sorted_stats = sorted(usage_stats, key=lambda x: x.get("created_at", ""), reverse=True)
+                    if sorted_stats:
+                        last_action = sorted_stats[0].get("action_type")
+                        last_action_date = sorted_stats[0].get("created_at")
+
+                # Count files for this folder
+                files_response = client.table("files").select("*", count="exact").eq("folder_id", item.get("folder_id")).execute()
+                files_count = files_response.count or 0
+
+                template_data = {
+                    "id": item.get("id"),
+                    "folder_id": item.get("folder_id"),
+                    "name": item.get("name"),
+                    "content": item.get("content"),
+                    "template_type": item.get("template_type"),
+                    "file_extension": item.get("file_extension"),
+                    "formatting_data": item.get("formatting_data"),
+                    "word_compatible": item.get("word_compatible"),
+                    "is_active": item.get("is_active"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "folder_name": folder.get("name"),
+                    "folder_color": folder.get("color"),
+                    "files_count": files_count,
+                    "last_action_type": last_action,
+                    "last_action_date": last_action_date
+                }
+                templates.append(template_data)
+                
+            return templates
+            
+        except Exception as e:
+            logger.error(f"Error fetching templates for user {user_id}: {e}")
+            return []
+
+# Global cache refresh manager
+cache_refresh_manager: Optional[CacheRefreshManager] = None
+
+def get_cache_refresh_manager() -> CacheRefreshManager:
+    """Get the cache refresh manager singleton"""
+    global cache_refresh_manager
+    if cache_refresh_manager is None:
+        cache_refresh_manager = CacheRefreshManager()
+    return cache_refresh_manager
+
+async def start_cache_refresh_background():
+    """Start the cache refresh background task"""
+    manager = get_cache_refresh_manager()
+    await manager.start_periodic_refresh()
+
+def stop_cache_refresh_background():
+    """Stop the cache refresh background task"""
+    manager = get_cache_refresh_manager()
+    manager.stop_periodic_refresh()
 
 async def cleanup_template_jobs(max_age_hours: int = 24) -> int:
     """Public function to clean up stuck template generation jobs"""

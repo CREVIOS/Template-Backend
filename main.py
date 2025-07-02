@@ -7,6 +7,8 @@ import platform
 import sys
 from contextlib import asynccontextmanager
 from core.database import initialize_database
+from core.redis_cache import initialize_cache_service
+from core.background_tasks import start_cache_refresh_background, stop_cache_refresh_background
 
 # Import routers directly 
 from core.folders import router as folders_router
@@ -60,14 +62,25 @@ async def lifespan(app: FastAPI):
     try:
         await initialize_database()
         print("✅ Database clients initialized successfully")
+        
+        await initialize_cache_service()
+        print("✅ Redis cache service initialized successfully")
+        
+        await start_cache_refresh_background()
+        print("✅ Cache refresh background task started")
     except Exception as e:
-        print(f"❌ Failed to initialize database: {e}")
+        print(f"❌ Failed to initialize services: {e}")
         raise
     
     yield
     
-    # Shutdown (add cleanup if needed)
+    # Shutdown
     print("🛑 Shutting down application...")
+    try:
+        stop_cache_refresh_background()
+        print("✅ Cache refresh background task stopped")
+    except Exception as e:
+        print(f"⚠️  Error stopping cache refresh: {e}")
     
 # Create FastAPI app
 app = FastAPI(

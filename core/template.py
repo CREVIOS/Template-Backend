@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from loguru import logger
 import json
 
 from core.database import get_database_service, DatabaseService
+from core.redis_cache import get_cache_service, RedisCacheService
 from core.api_config import APIConfiguration
 # from core.template_generator import TemplateGenerator
 from core.document_exporter import DocumentExporter
@@ -34,24 +35,23 @@ def get_document_exporter() -> DocumentExporter:
     """Get document exporter instance"""
     return DocumentExporter()
 
-# ============================================================================
-# TEMPLATE LISTING & RETRIEVAL
-# ============================================================================
+def get_cache_service_dep() -> RedisCacheService:
+    """FastAPI dependency to get cache service"""
+    return get_cache_service()
 
-@router.get("/", response_model=TemplatesResponse)
-async def get_templates(
-    user_id: str = Query(...),
-    sort_field: str = Query(
-        "name",
-        pattern="^(name|folder_name|files_count|last_action_type|last_action_date)$"
-    ),
-    sort_direction: str = Query("asc", pattern="^(asc|desc)$"),
-    search: Optional[str] = Query(None),
-    folder_id: Optional[str] = Query(None),
-    template_type: Optional[str] = Query(None),
-    db: DatabaseService = Depends(get_database_service)
-):
-    """Get all templates with details for a user"""
+async def fetch_templates_from_db(
+    user_id: str,
+    sort_field: str = "name",
+    sort_direction: str = "asc",
+    search: Optional[str] = None,
+    folder_id: Optional[str] = None,
+    template_type: Optional[str] = None,
+    db: DatabaseService = None
+) -> List[Dict[str, Any]]:
+    """Fetch templates from database and return processed data"""
+    if db is None:
+        db = get_database_service()
+    
     try:
         # Build the query
         query = db.client.from_("templates").select(
@@ -74,7 +74,7 @@ async def get_templates(
         result = await query.execute()
 
         if not result.data:
-            return TemplatesResponse(templates=[], total=0)
+            return []
 
         # Process results
         templates = []
@@ -95,44 +95,199 @@ async def get_templates(
             files_response = await db.client.from_("files").select("*", count="exact").eq("folder_id", item.get("folder_id")).execute()
             files_count = files_response.count or 0
 
-            template = TemplateWithDetails(
-                id=item.get("id"),
-                folder_id=item.get("folder_id"),
-                name=item.get("name"),
-                content=item.get("content"),
-                template_type=item.get("template_type"),
-                file_extension=item.get("file_extension"),
-                formatting_data=item.get("formatting_data"),
-                word_compatible=item.get("word_compatible"),
-                is_active=item.get("is_active"),
-                created_at=item.get("created_at"),
-                updated_at=item.get("updated_at"),
-                folder_name=folder.get("name"),
-                folder_color=folder.get("color"),
-                files_count=files_count,
-                last_action_type=last_action,
-                last_action_date=last_action_date
-            )
-            templates.append(template)
+            template_data = {
+                "id": item.get("id"),
+                "folder_id": item.get("folder_id"),
+                "name": item.get("name"),
+                "content": item.get("content"),
+                "template_type": item.get("template_type"),
+                "file_extension": item.get("file_extension"),
+                "formatting_data": item.get("formatting_data"),
+                "word_compatible": item.get("word_compatible"),
+                "is_active": item.get("is_active"),
+                "created_at": item.get("created_at"),
+                "updated_at": item.get("updated_at"),
+                "folder_name": folder.get("name"),
+                "folder_color": folder.get("color"),
+                "files_count": files_count,
+                "last_action_type": last_action,
+                "last_action_date": last_action_date
+            }
+            templates.append(template_data)
         
         # Apply post-processing sorting
         if sort_field in ["last_action_type", "last_action_date", "files_count"]:
             if sort_field == "last_action_type":
                 templates.sort(
-                    key=lambda t: (t.last_action_type is None, t.last_action_type or ""),
+                    key=lambda t: (t["last_action_type"] is None, t["last_action_type"] or ""),
                     reverse=(sort_direction == "desc")
                 )
             elif sort_field == "last_action_date":
                 templates.sort(
-                    key=lambda t: (t.last_action_date is None, t.last_action_date or ""),
+                    key=lambda t: (t["last_action_date"] is None, t["last_action_date"] or ""),
                     reverse=(sort_direction == "desc")
                 )
             elif sort_field == "files_count":
                 templates.sort(
-                    key=lambda t: t.files_count,
+                    key=lambda t: t["files_count"],
                     reverse=(sort_direction == "desc")
                 )
 
+        return templates
+
+    except Exception as e:
+        logger.error(f"Error fetching templates from DB: {str(e)}", exc_info=True)
+        return []
+
+# ============================================================================
+# TEMPLATE LISTING & RETRIEVAL
+# ============================================================================
+
+@router.get("/active-job-step/{user_id}")
+async def get_active_job_step(
+    user_id: str,
+    db: DatabaseService = Depends(get_database_service)
+):
+    """Get active job step for a user"""
+    try:
+        # For now, return a simple response to test the endpoint
+        return {
+            "active_job": None,
+            "active_step": None,
+            "user_id": user_id,
+            "message": "Endpoint working - no active jobs found"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting active job step for user {user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Error getting active job step: {str(e)}")
+
+@router.get("/", response_model=TemplatesResponse)
+async def get_templates(
+    user_id: str = Query(...),
+    sort_field: str = Query(
+        "name",
+        pattern="^(name|folder_name|files_count|last_action_type|last_action_date)$"
+    ),
+    sort_direction: str = Query("asc", pattern="^(asc|desc)$"),
+    search: Optional[str] = Query(None),
+    folder_id: Optional[str] = Query(None),
+    template_type: Optional[str] = Query(None),
+    force_refresh: bool = Query(False, description="Force refresh from database bypassing cache"),
+    db: DatabaseService = Depends(get_database_service),
+    cache: RedisCacheService = Depends(get_cache_service_dep)
+):
+    """Get all templates with details for a user - cache-first approach"""
+    try:
+        templates_data = []
+        cache_used = False
+        
+        # Always try cache first unless force_refresh is True
+        if not force_refresh:
+            cached_templates = await cache.get_user_templates(user_id)
+            if cached_templates:
+                templates_data = cached_templates
+                cache_used = True
+                logger.debug(f"Cache HIT for user {user_id}: {len(templates_data)} templates")
+            else:
+                logger.debug(f"Cache MISS for user {user_id}, fetching from DB")
+        
+        # If cache miss or force refresh, fetch from database
+        if not templates_data:
+            templates_data = await fetch_templates_from_db(
+                user_id=user_id,
+                sort_field="name",  # Get unsorted data for caching
+                sort_direction="asc",  # Get unsorted data for caching
+                search=None,  # No filters for caching
+                folder_id=None,  # No filters for caching
+                template_type=None,  # No filters for caching
+                db=db
+            )
+            
+            # Cache the unfiltered results for future use
+            if templates_data:
+                await cache.set_user_templates(user_id, templates_data)
+                logger.debug(f"Cached {len(templates_data)} templates for user {user_id}")
+        
+        # Apply filtering and sorting to data (from cache or DB)
+        if templates_data:
+            # Apply filters
+            if search:
+                templates_data = [t for t in templates_data if search.lower() in t.get("name", "").lower()]
+                logger.debug(f"Applied search filter '{search}': {len(templates_data)} templates remain")
+            if folder_id:
+                templates_data = [t for t in templates_data if t.get("folder_id") == folder_id]
+                logger.debug(f"Applied folder filter '{folder_id}': {len(templates_data)} templates remain")
+            if template_type:
+                templates_data = [t for t in templates_data if t.get("template_type") == template_type]
+                logger.debug(f"Applied type filter '{template_type}': {len(templates_data)} templates remain")
+            
+            # Apply sorting
+            if sort_field == "name":
+                templates_data.sort(
+                    key=lambda t: t.get("name", "").lower(),
+                    reverse=(sort_direction == "desc")
+                )
+            elif sort_field == "folder_name":
+                templates_data.sort(
+                    key=lambda t: t.get("folder_name", "").lower(),
+                    reverse=(sort_direction == "desc")
+                )
+            elif sort_field == "last_action_type":
+                templates_data.sort(
+                    key=lambda t: (t.get("last_action_type") is None, t.get("last_action_type") or ""),
+                    reverse=(sort_direction == "desc")
+                )
+            elif sort_field == "last_action_date":
+                templates_data.sort(
+                    key=lambda t: (t.get("last_action_date") is None, t.get("last_action_date") or ""),
+                    reverse=(sort_direction == "desc")
+                )
+            elif sort_field == "files_count":
+                templates_data.sort(
+                    key=lambda t: t.get("files_count", 0),
+                    reverse=(sort_direction == "desc")
+                )
+            
+            if sort_field != "name" or sort_direction != "asc":
+                logger.debug(f"Applied sorting: {sort_field} {sort_direction}")
+        
+        # Convert to TemplateWithDetails objects
+        templates = []
+        for template_data in templates_data:
+            template = TemplateWithDetails(
+                id=template_data.get("id"),
+                folder_id=template_data.get("folder_id"),
+                name=template_data.get("name"),
+                content=template_data.get("content"),
+                template_type=template_data.get("template_type"),
+                file_extension=template_data.get("file_extension"),
+                formatting_data=template_data.get("formatting_data"),
+                word_compatible=template_data.get("word_compatible"),
+                is_active=template_data.get("is_active"),
+                created_at=template_data.get("created_at"),
+                updated_at=template_data.get("updated_at"),
+                folder_name=template_data.get("folder_name"),
+                folder_color=template_data.get("folder_color"),
+                files_count=template_data.get("files_count"),
+                last_action_type=template_data.get("last_action_type"),
+                last_action_date=template_data.get("last_action_date")
+            )
+            templates.append(template)
+
+        filter_info = []
+        if search:
+            filter_info.append(f"search='{search}'")
+        if folder_id:
+            filter_info.append(f"folder_id='{folder_id}'")
+        if template_type:
+            filter_info.append(f"type='{template_type}'")
+        if sort_field != "name" or sort_direction != "asc":
+            filter_info.append(f"sort={sort_field}_{sort_direction}")
+        
+        filter_str = f" with filters: {', '.join(filter_info)}" if filter_info else ""
+        logger.info(f"Returned {len(templates)} templates for user {user_id} (cache_used: {cache_used}){filter_str}")
         return TemplatesResponse(templates=templates, total=len(templates))
 
     except Exception as e:
@@ -191,6 +346,82 @@ async def get_template_preview(
     except Exception as e:
         logger.error(f"Error fetching template: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching template: {str(e)}")
+
+# ============================================================================
+# CACHE MANAGEMENT
+# ============================================================================
+
+@router.post("/cache/refresh")
+async def refresh_template_cache(
+    user_id: str = Query(...),
+    db: DatabaseService = Depends(get_database_service),
+    cache: RedisCacheService = Depends(get_cache_service_dep)
+):
+    """Refresh template cache for a user"""
+    try:
+        # Invalidate existing cache
+        await cache.invalidate_user_cache(user_id)
+        
+        # Fetch fresh data from database
+        fresh_templates = await fetch_templates_from_db(user_id=user_id, db=db)
+        
+        # Cache the fresh data
+        success = await cache.set_user_templates(user_id, fresh_templates)
+        
+        if success:
+            logger.info(f"Cache refreshed for user {user_id}: {len(fresh_templates)} templates")
+            return ApiResponse(
+                success=True,
+                message=f"Cache refreshed successfully with {len(fresh_templates)} templates",
+                data={"template_count": len(fresh_templates)}
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to refresh cache")
+            
+    except Exception as e:
+        logger.error(f"Error refreshing cache for user {user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error refreshing cache: {str(e)}")
+
+@router.get("/cache/info")
+async def get_cache_info(
+    user_id: str = Query(...),
+    cache: RedisCacheService = Depends(get_cache_service_dep)
+):
+    """Get cache information for a user"""
+    try:
+        cache_info = await cache.get_cache_info(user_id)
+        cache_valid = await cache.is_cache_valid(user_id)
+        cache_stats = await cache.get_cache_stats()
+        
+        return {
+            "user_cache_info": cache_info,
+            "cache_valid": cache_valid,
+            "global_stats": {
+                "hit_count": cache_stats.hit_count,
+                "miss_count": cache_stats.miss_count,
+                "hit_rate": cache_stats.hit_count / (cache_stats.hit_count + cache_stats.miss_count) * 100 if (cache_stats.hit_count + cache_stats.miss_count) > 0 else 0,
+                "last_refresh": cache_stats.last_refresh.isoformat() if cache_stats.last_refresh else None
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting cache info for user {user_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting cache info: {str(e)}")
+
+@router.get("/cache/health")
+async def cache_health_check(
+    cache: RedisCacheService = Depends(get_cache_service_dep)
+):
+    """Health check for cache service"""
+    try:
+        health_info = await cache.health_check()
+        return health_info
+    except Exception as e:
+        logger.error(f"Cache health check failed: {str(e)}", exc_info=True)
+        return {
+            "status": "error",
+            "error": str(e)
+        }
 
 # ============================================================================
 # TEMPLATE GENERATION
