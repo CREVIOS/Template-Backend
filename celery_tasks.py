@@ -737,7 +737,7 @@ def extract_clauses_task(self, file_id: str, job_id: Optional[str] = None):
 # TEMPLATE GENERATION TASK
 # ============================================================================
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, soft_time_limit=3600, time_limit=3660)
 def template_generation_task(self, job_id: str):
     """Celery task to handle template generation in the background"""
     if not job_id:
