@@ -307,7 +307,7 @@ async def batch_process_files(
 
         # Start batch processing task
         task_result = batch_process_files_task.delay(
-            file_ids, user_id, process_type
+            file_ids, user_id
         )
 
         return ApiResponse(

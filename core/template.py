@@ -17,7 +17,7 @@ from core.models import (
     TemplatePreview,
     ApiResponse
 )
-from celery_tasks import template_generation_task
+from celery_tasks import template_generation_task, template_update_task
 from core.db_utilities import create_job, get_job_status as get_job_status_util
 
 logger.add("logs/template.log", rotation="10 MB", level="DEBUG")
@@ -1134,9 +1134,183 @@ async def cleanup_stuck_jobs(
         logger.error(f"Error during manual job cleanup: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error during job cleanup: {str(e)}")
 
+
+
+
 # ============================================================================
-# HELPER FUNCTIONS
+# Template Update
 # ============================================================================
+@router.post("/update", response_model=ApiResponse)
+async def update_template_with_files(
+    template_id: str = Query(...),
+    user_id: str = Query(...),
+    file_ids: List[str] = Query(..., description="List of file IDs to update template with"),
+    db: DatabaseService = Depends(get_database_service)
+):
+    """Update existing template with new files"""
+    try:
+        logger.info(f"🔄 Starting template update: {template_id} with {len(file_ids)} files")
+        
+        # Verify template exists and user has access
+        template_response = await db.client.from_("templates").select(
+            "*, folders(user_id, name)"
+        ).eq("id", template_id).single().execute()
+        
+        if not template_response.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        template_data = template_response.data
+        folder = template_data.get("folders", {})
+        
+        if folder.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Verify all files exist and belong to user
+        files_response = await db.client.from_("files").select(
+            "id, original_filename, status, folder_id, user_id"
+        ).in_("id", file_ids).eq("user_id", user_id).execute()
+        
+        if not files_response.data or len(files_response.data) != len(file_ids):
+            raise HTTPException(status_code=400, detail="Some files not found or access denied")
+        
+        # Check file status for information (but don't reject unprocessed files)
+        unprocessed_files = [f for f in files_response.data if f["status"] not in ["processed", "clauses_ready"]]
+        processed_files = [f for f in files_response.data if f["status"] in ["processed", "clauses_ready"]]
+        
+        logger.info(f"Template update: {len(processed_files)} files ready, {len(unprocessed_files)} files need processing")
+        
+        # Check for existing active update jobs for this template
+        existing_jobs = await db.client.from_("jobs").select(
+            "id, status, metadata, celery_task_id"
+        ).eq("user_id", user_id).eq("job_type", "template_update").in_(
+            "status", ["pending", "processing"]
+        ).execute()
+        
+        if existing_jobs.data:
+            for job in existing_jobs.data:
+                job_metadata = job.get("metadata", {})
+                if job_metadata.get("template_id") == template_id:
+                    logger.info(f"Found existing active update job {job['id']} for template {template_id}")
+                    return ApiResponse(
+                        success=True,
+                        message="Template update already in progress",
+                        data={
+                            "update_job_id": job["id"],
+                            "status": job["status"],
+                            "existing_job": True
+                        }
+                    )
+        
+        # Create job record
+        update_job_id = await create_job(
+            user_id=user_id,
+            job_type="template_update",
+            metadata={
+                "template_id": template_id,
+                "template_name": template_data.get("name"),
+                "file_ids": file_ids,
+                "total_files": len(file_ids),
+                "folder_id": template_data.get("folder_id")
+            },
+            total_steps=3
+        )
+        
+        # Start Celery task
+        task_result = template_update_task.delay(update_job_id)
+        
+        # Update job with Celery task ID
+        await db.client.from_("jobs").update({
+            "celery_task_id": task_result.id,
+            "status": "processing",
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", update_job_id).execute()
+        
+        return ApiResponse(
+            success=True,
+            message="Template update job created successfully",
+            data={
+                "update_job_id": update_job_id,
+                "status": "pending",
+                "template_id": template_id,
+                "files_count": len(file_ids),
+                "files_ready": len(processed_files),
+                "files_need_processing": len(unprocessed_files),
+                "estimated_duration": "2-3 minutes" if len(unprocessed_files) == 0 else "3-5 minutes"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting template update: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Error starting template update: {str(e)}")
+
+@router.get("/update/{update_job_id}/status")
+async def get_update_status(
+    update_job_id: str,
+    user_id: str = Query(...),
+    db: DatabaseService = Depends(get_database_service)
+):
+    """Get the status of a template update job"""
+    try:
+        job_status = await get_job_status_util(update_job_id)
+        
+        if "error" in job_status:
+            return {
+                "update_job_id": update_job_id,
+                "status": "error",
+                "progress": 0,
+                "message": job_status.get("error", "Unknown error"),
+                "estimated_completion": ""
+            }
+        
+        # Extract metadata
+        metadata = job_status.get("metadata", {})
+        template_name = metadata.get("template_name", "Unknown Template")
+        
+        # Generate status message
+        status = job_status.get("status", "pending")
+        current_step_name = job_status.get("current_step_name", "")
+        
+        if status == "completed":
+            message = f"Template '{template_name}' updated successfully"
+        elif status == "failed":
+            message = job_status.get("error_message", "Template update failed")
+        elif current_step_name == "process_files":
+            message = "Ensuring files are ready for update..."
+        elif current_step_name == "update_template":
+            message = f"Updating template '{template_name}' with AI..."
+        elif current_step_name == "extract_clauses":
+            message = "Extracting clauses from updated template..."
+        else:
+            message = "Preparing template update..."
+        
+        # Estimate completion
+        estimated_completion = ""
+        if status == "processing":
+            progress = job_status.get("progress", 0)
+            if progress < 50:
+                estimated_completion = "2-3 minutes"
+            elif progress < 80:
+                estimated_completion = "1-2 minutes"
+            else:
+                estimated_completion = "Less than 1 minute"
+        
+        return {
+            "update_job_id": update_job_id,
+            "status": status,
+            "progress": job_status.get("progress", 0),
+            "message": message,
+            "template_name": template_name,
+            "estimated_completion": estimated_completion
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting update status: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Error getting update status: {str(e)}")
+
 
 async def track_template_usage(
     template_id: str,
