@@ -617,89 +617,115 @@ Invalid JSON:
             self.logger.error(f"Failed to repair JSON: {str(e)}", exc_info=True)
             return ""
 
-    # async def generate_template(self, template_data: Dict[str, Any]) -> str:
-    #     """Generate template from processed files data"""
-    #     try:
-    #         self.logger.info(f"Generating template: {template_data.get('name', 'Unnamed')}")
+    def update_template_new_files(self, current_template: str, new_contract: str) -> str:
+        """Update existing template with new contract content while preserving existing structure"""
+        self.logger.info("Updating existing template with new contract content")
+        
+        if not self.api_config.is_configured():
+            self.logger.error("API not configured")
+            raise ValueError("API not configured")
+        
+        prompt = f"""You are an experienced solicitor in Hong Kong with decades of experience. You are the senior partner of an international law firm. 
+
+CONTEXT:
+You have an existing template that has already been refined through extensive iterations. This template contains:
+- Well-crafted legal language
+- Comprehensive drafting notes
+- Alternative clauses for different scenarios
+- Proper formatting and structure
+- Detailed guidance for junior lawyers
+
+TASK:
+Update this existing template by intelligently incorporating content from a new legal document. The goal is to enhance the template without disrupting its existing quality and structure.
+
+CRITICAL REQUIREMENTS:
+
+1. PRESERVE AND ENHANCE EXISTING CONTENT:
+   - ENHANCE existing drafting notes with new insights from the new contract
+   - UPDATE drafting notes to reflect any improvements or additional considerations
+   - Maintain ALL existing alternative clauses and their explanations (but can improve them)
+   - Preserve the existing template structure and organization
+   - Keep all existing placeholder formats [Placeholder Name]
+   - Keep all existing [DRAFTING NOTE: ...] and [ALTERNATIVE CLAUSE: ...] formatting
+   - Maintain existing legal language and terminology (but can improve it)
+
+2. INTELLIGENT INTEGRATION:
+   - Only add new content where it genuinely enhances the template
+   - If a clause in the new contract is similar to an existing clause, improve the existing clause rather than replacing it
+   - Add new clauses only if they bring significant value not already covered
+   - If the new contract has better language for an existing concept, enhance the existing clause
+   - Add new alternative clauses if the new contract provides genuinely different approaches
+   - UPDATE existing drafting notes with new insights, enhanced explanations, and additional considerations from the new contract
+
+3. ENHANCEMENT APPROACH:
+   - Enhance existing clauses with better language from the new contract
+   - Add new placeholders if the new contract reveals additional variable fields
+   - UPDATE and IMPROVE existing drafting notes with new insights and considerations
+   - Add enhanced explanations to existing drafting notes based on new contract learnings
+   - Add new alternative clauses only if they represent genuinely different legal approaches
+   - Strengthen existing provisions with additional protections or clarity from the new contract
+   - For each [DRAFTING NOTE: ...], review and enhance with new insights from the new contract where relevant
+   - For each [ALTERNATIVE CLAUSE: ...], review and enhance explanations with new insights from the new contract where relevant
+
+4. FORMATTING CONSISTENCY:
+   - Maintain all existing PREFIX formats for numbered lists:
+     * NUMBERED_LIST_ITEM: [content]
+     * SUB_NUMBERED_ITEM: [content]
+     * SUB_SUB_NUMBERED_ITEM: [content]
+     * ALPHA_ITEM_MAIN: [content]
+     * SUB_ALPHA_ITEM: [content]
+     * And all other existing formats
+   - Preserve existing hierarchical structure
+   - Keep existing cross-references and internal consistency
+
+5. WHAT NOT TO DO:
+   - Do NOT remove existing drafting notes (but you CAN enhance and update them)
+   - Do NOT remove existing alternative clauses (but you CAN improve them)
+   - Do NOT change existing formatting or structure unnecessarily
+   - Do NOT change existing [DRAFTING NOTE: ...] or [ALTERNATIVE CLAUSE: ...] formatting
+   - Do NOT replace well-crafted existing clauses unless the new version is significantly better
+   - Do NOT add redundant content that duplicates existing provisions
+
+6. DRAFTING NOTES ENHANCEMENT:
+   - UPDATE existing drafting notes with new insights from the new contract
+   - ADD additional considerations and best practices discovered in the new contract
+   - ENHANCE existing guidance with more comprehensive explanations
+   - UPDATE existing [DRAFTING NOTE: ...] sections with new insights and considerations
+   - IMPROVE risk assessments and compliance considerations based on new contract
+   - EXPAND "when to use" and "when not to use" guidance where the new contract provides insights
+   - STRENGTHEN existing alternative clause explanations with additional context
+   - UPDATE existing [ALTERNATIVE CLAUSE: ...] sections with new insights and considerations
+   - For each [ALTERNATIVE CLAUSE: ...], review and enhance explanations with new insights
+
+7. INTEGRATION STRATEGY:
+   - Review each section of the new contract against the existing template
+   - Identify genuine improvements or new concepts
+   - Enhance existing clauses with better language where appropriate
+   - Add new clauses only where they fill genuine gaps
+   - Ensure any additions maintain the existing template's quality and style
+
+7. OUTPUT REQUIREMENTS:
+   - Return the complete updated template
+   - Maintain all existing quality and comprehensiveness
+   - Ensure the template remains cohesive and well-organized
+   - Preserve all existing guidance for junior lawyers
+   - Keep all existing professional formatting and presentation
+
+EXISTING TEMPLATE:
+{current_template}
+
+NEW CONTRACT FOR INTEGRATION:
+{new_contract}
+
+Please update the template by intelligently incorporating the best elements from the new contract while preserving all existing quality, structure, and guidance. Pay special attention to updating and enhancing existing drafting notes with new insights, considerations, and improved explanations based on what you learn from the new contract."""
+        
+        try:
+            self.logger.debug("Sending request to Gemini for intelligent template update")
+            updated_template = self._call_gemini(prompt, temperature=0.1)
             
-    #         files = template_data.get('files', [])
-    #         priority_file_id = template_data.get('priority_file_id')
-    #         folder_id = template_data.get('folder_id')
-    #         template_name = template_data.get('name', f"Generated Template - {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+            self.logger.info("Successfully updated existing template")
+            return updated_template
             
-    #         if not files:
-    #             raise ValueError("No files provided for template generation")
-            
-    #         # Get markdown content for each file
-    #         from core.database import get_database_service
-    #         db_service = get_database_service()
-            
-    #         processed_files = []
-    #         for file_data in files:
-    #             file_id = file_data.get('id')
-    #             if not file_id:
-    #                 continue
-                    
-    #             # Get markdown content
-    #             markdown_response = db_service.client.table("markdown_content").select("*").eq("file_id", file_id).execute()
-    #             if markdown_response.data:
-    #                 markdown_content = markdown_response.data[0]['content']
-    #                 processed_files.append({
-    #                     'file_id': file_id,
-    #                     'filename': file_data.get('original_filename', 'Unknown'),
-    #                     'extracted_text': markdown_content
-    #                 })
-            
-    #         if not processed_files:
-    #             raise ValueError("No processed files with content available")
-            
-    #         # Reorder files to put priority file first
-    #         if priority_file_id:
-    #             priority_file = next((f for f in processed_files if f['file_id'] == priority_file_id), None)
-    #             if priority_file:
-    #                 processed_files.remove(priority_file)
-    #                 processed_files.insert(0, priority_file)
-            
-    #         # Generate template content
-    #         if len(processed_files) == 1:
-    #             template_content = self.generate_initial_template(processed_files[0]['extracted_text'])
-    #         else:
-    #             # Start with first file
-    #             template_content = self.generate_initial_template(processed_files[0]['extracted_text'])
-                
-    #             # Update with additional files
-    #             for contract in processed_files[1:]:
-    #                 template_content = self.update_template(template_content, contract['extracted_text'])
-            
-    #         # Add drafting notes
-    #         final_template = self.add_drafting_notes(template_content, processed_files)
-            
-    #         # Save template to database
-    #         template_data_db = {
-    #             "folder_id": folder_id,
-    #             "name": template_name,
-    #             "content": final_template,
-    #             "template_type": "general",
-    #             "file_extension": ".docx",
-    #             "formatting_data": {
-    #                 "source_files": [f['filename'] for f in processed_files],
-    #                 "generation_date": datetime.utcnow().isoformat(),
-    #                 "ai_generated": True,
-    #                 "priority_file": priority_file_id
-    #             },
-    #             "word_compatible": True,
-    #             "is_active": True
-    #         }
-            
-    #         template_result = db_service.client.table("templates").insert(template_data_db).execute()
-            
-    #         if template_result.data:
-    #             template_id = template_result.data[0]["id"]
-    #             self.logger.info(f"Successfully generated template {template_id}")
-    #             return template_id
-    #         else:
-    #             raise ValueError("Failed to save template to database")
-                
-    #     except Exception as e:
-    #         self.logger.error(f"Template generation failed: {str(e)}", exc_info=True)
-    #         raise
+        except Exception as e:
+            self.logger.error(f"Failed to update template: {str(e)}", exc_info=True)
+            raise
