@@ -737,7 +737,7 @@ def extract_clauses_task(self, file_id: str, job_id: Optional[str] = None):
 # TEMPLATE GENERATION TASK
 # ============================================================================
 
-@celery_app.task(bind=True, max_retries=2, default_retry_delay=60, soft_time_limit=3600, time_limit=3660)
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
 def template_generation_task(self, job_id: str):
     """Celery task to handle template generation in the background"""
     if not job_id:
@@ -801,6 +801,18 @@ def template_generation_task(self, job_id: str):
             "completed_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat()
         }).eq("id", job_id).execute()
+        
+        # Invalidate cache for the user since new template was generated
+        try:
+            from core.redis_cache import invalidate_user_cache_sync
+            cache_invalidated = invalidate_user_cache_sync(user_id)
+            if cache_invalidated:
+                logger.info(f"✅ Cache invalidated for user {user_id} after template generation")
+            else:
+                logger.warning(f"⚠️  Cache invalidation failed for user {user_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ Error invalidating cache for user {user_id}: {cache_error}")
+            # Don't fail the entire task if cache invalidation fails
         
         logger.info(f"Template generation task {job_id} completed successfully")
         
