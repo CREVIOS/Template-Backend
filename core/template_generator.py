@@ -2,11 +2,12 @@ import json
 import re
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_exponential
 from core.api_config import APIConfiguration
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from enum import Enum  # This is missing
 
 logger.add("logs/template_generator.log", rotation="100 MB", level="DEBUG", backtrace=True, diagnose=True)
 
@@ -18,8 +19,49 @@ class RelevanceAssessment(BaseModel):
     compliance_requirements: List[str]
     best_practices: List[str]
 
+
+class ClauseType(str, Enum):
+    # Fundamental Clauses
+    PAYMENT_TERMS = "Payment Terms Clause"
+    SCOPE_OF_WORK = "Scope of Work (Statement of Work) Clause"
+    TERM_TERMINATION = "Term & Termination Clause"
+    PRICE_ADJUSTMENT = "Price Adjustment / Escalation Clause"
+    
+    # Protective Clauses
+    INDEMNITY = "Indemnity Clause"
+    LIMITATION_LIABILITY = "Limitation of Liability Clause"
+    EXEMPTION_EXCLUSION = "Exemption / Exclusion Clause"
+    LIQUIDATED_DAMAGES = "Liquidated Damages Clause"
+    EXCULPATORY = "Exculpatory Clause"
+    GROSS_UP = "Gross-Up Clause"
+    RETENTION_TITLE = "Retention of Title (Romalpa) Clause"
+    
+    # Dispute Resolution Clauses
+    ARBITRATION = "Arbitration Clause"
+    DISPUTE_RESOLUTION = "Dispute Resolution / Escalation Clause"
+    CHOICE_OF_LAW = "Choice of Law Clause"
+    CONFESSION_JUDGMENT = "Confession of Judgment Clause"
+    
+    # Confidentiality & IP Clauses
+    CONFIDENTIALITY = "Confidentiality / Non-Disclosure Clause"
+    INTELLECTUAL_PROPERTY = "Intellectual Property Clause"
+    NON_COMPETE = "Non-Compete Clause"
+    NON_SOLICITATION = "Non-Solicitation Clause"
+    
+    # Operational (Boilerplate) Clauses
+    ASSIGNMENT = "Assignment Clause"
+    CHANGE_CONTROL = "Change Control / Changes Clause"
+    AMENDMENT = "Amendment Clause"
+    NOTICE = "Notice Clause"
+    SEVERABILITY = "Severability Clause"
+    SURVIVAL = "Survival Clause"
+    ENTIRE_AGREEMENT = "Entire Agreement Clause"
+    WAIVER = "Waiver Clause"
+    INTERPRETATION = "Interpretation Clause"
+    ELECTRONIC_SIGNATURES = "Electronic Signatures Clause"
+
 class ClauseData(BaseModel):
-    clause_type: str
+    clause_type: ClauseType  # Changed from str to ClauseType enum
     clause_text: str
     position_context: str
     clause_purpose: str
@@ -27,6 +69,31 @@ class ClauseData(BaseModel):
 
 class ClauseExtraction(BaseModel):
     clauses: List[ClauseData]
+
+
+
+
+class AlternativeClause(BaseModel):
+    alternative_text: str
+    drafting_note: str
+    use_when: str
+
+class SubClause(BaseModel):
+    subclause_number: Union[str, float]  # Allow both numeric and text identifiers
+    subclause_text: str
+    drafting_note: str
+    alternatives: Optional[List[AlternativeClause]] = Field(default_factory=list)
+
+class MainClause(BaseModel):
+    type: ClauseType
+    clause_text: str
+    drafting_note: str
+    subclauses: Optional[List[SubClause]] = Field(default_factory=list)  # Changed from Dict to List
+    alternatives: Optional[List[AlternativeClause]] = Field(default_factory=list)
+
+class ContractTemplate(BaseModel):
+    general_text: str
+    clauses: List[MainClause]  # Changed from Dict to List to avoid $ref issues with Gemini API
 
 class TemplateGenerator:
     """Generate legal templates using Gemini AI with enhanced features"""
@@ -151,77 +218,66 @@ Contract text:
             self.logger.error("API not configured")
             raise ValueError("API not configured")
         
-        prompt = f"""You are an experienced solicitor in Hong Kong. You have decades of experience and are the senior partner of an international law firm. Here is a second legal document that you think is well drafted. You are trying to make a template using legal documents so you can reuse it in the future easily. You initially generated a template using a legal document you recently drafted.
-        Below you are given both the current template and also a New contract document. Update your template based on this second document. 
+        prompt = f"""You are an experienced solicitor in Hong Kong with decades of experience and are the senior partner of an international law firm. You are creating a comprehensive legal document template for future reuse.
 
-REQUIREMENTS:
-1. Merge the best practices from both documents
-2. Add new clauses to the template using the second document where appropriate
-3. Improve existing clauses
-4. Ensure ALL placeholders use square brackets [Placeholder Name]
-5. Identify and add any new placeholder fields from this contract
-6. Maintain comprehensive placeholder coverage for all variable information
+**TASK:** Update your existing template by incorporating a new contract document, merging the best practices from both documents.
 
-7. CLAUSE LIST FORMATTING REQUIREMENTS FOR AUTOMATED PROCESSING AND WORD COMPATIBILITY:
-   - ALL numbered items MUST use the following prefix formats - DO NOT use manual numbering like "1." or "1.1" directly:
-     * Main clauses: "NUMBERED_LIST_ITEM: [content]" (replaces 1., 2., 3., etc.)
-     * First-level numerical subclauses: "SUB_NUMBERED_ITEM: [content]" (replaces 1.1, 1.2, etc.)
-     * Second-level numerical subclauses: "SUB_SUB_NUMBERED_ITEM: [content]" (replaces 1.1.1, 1.1.2, etc.)
-     
-     * alphabetical used in main level: "ALPHA_ITEM_MAIN: [content]" (replaces (a), (b), (c), etc.)
-     * alphabetical used in first level subclauses: "SUB_ALPHA_ITEM: [content]" 
-     * alphabetical used in second level subclauses: "SUB_SUB_ALPHA_ITEM: [content]"
+**INPUTS:**
+- Current template: {current_template}
+- New contract: {new_contract}
 
-     * roman numerals used in main level: "ROMAN_ITEM_MAIN: [content]" (replaces (i), (ii), (iii), etc.)
-     * roman numerals used in first level subclauses: "SUB_ROMAN_ITEM: [content]"
-     * roman numerals used in second level subclauses: "SUB_SUB_ROMAN_ITEM: [content]"
-   
-   - For bulleted lists (Either dependent on other lists or standalone):
-     * Main bullet points: "BULLET_ITEM: [content]"
-     * Sub-bullet points: "SUB_BULLET_ITEM: [content]"
-     * Sub-sub bullet points: "SUB_SUB_BULLET_ITEM: [content]"
-   
-   - PRESERVE HIERARCHICAL RELATIONSHIPS:
-     * Maintain the exact same hierarchy and structure as the original document using the PREFIX formats in point 7.
-     * Ensure parent-child relationships between clauses are preserved
-     * Keep cross-references intact but update to use the new prefix format
-     * The PREFIX must exactly match one of the options above - no variations allowed
-   
-   - USE THESE FORMATTINGS ONLY WHILE WRITING CLAUSE LISTS. WRITE OTHER PARAGRAPHS AND SECTIONS IN REGULAR MARKDOWN FORMAT.
+**FORMATTING REQUIREMENTS:**
 
-   
-8. CLAUSE STRUCTURE AND HIERARCHY REQUIREMENTS:
-   - Maintain a logical and consistent clause hierarchy throughout the template
-   - Use proper hierarchical numbering for clauses and subclauses following the PREFIX FORMAT in point 7:
-     * Main clauses: 1., 2., 3. (use PREFIX "NUMBERED_LIST_ITEM:")
-     * First level subclauses: 1.1, 1.2, 1.3 (use PREFIX "SUB_NUMBERED_ITEM:")
-     * Second level subclauses: 1.1.1, 1.1.2, 1.1.3 (use PREFIX "SUB_SUB_NUMBERED_ITEM:") and so on as mentioned in point 7
-   - Group related provisions into subclauses under a common parent clause
-   - Ensure logical flow between parent clauses and their subclauses
-   - When merging documents with different hierarchical structures, standardize the approach
-   - Create subclauses when a clause has multiple related concepts that deserve separate treatment
-   - Ensure cross-references in the document correctly reflect the hierarchical structure
-   - Maintain consistent indentation for each level of the hierarchy
-   - If either document contains well-structured subclauses, preserve and enhance this structure
-   - IMPORTANT: The structure relationships must be preserved, but ALL numbering must use the PREFIX formats in point 7
+**1. PLACEHOLDER SYSTEM**
+- ALL variable information MUST use square brackets: [Placeholder Name]
+- Examples: [Company Name], [Contract Date], [Governing Law], [Principal Amount]
+- Ensure comprehensive placeholder coverage for all variable information
 
-9. CLAUSE REQUIREMENTS:
-   - Include ALL clauses from the new contract (if the clause is not relevant to the template, do not include it)
-   - Maintain the exact structure and hierarchy of clauses
-   - Keep the original clause organization
-   - Preserve all legal definitions and references
-   - Include all schedules, annexes, and appendices
-   - Maintain cross-references between clauses
-   - Keep all boilerplate language and standard provisions
-   - Preserve the exact wording of legal terms and conditions
-   - Include all jurisdictional and governing law clauses
-   - Maintain all signature blocks and execution provisions
+**2. CLAUSE NUMBERING SYSTEM (MANDATORY - For Word/Automated Processing Compatibility)**
 
-Current template:
-{current_template}
+**Exact Prefix Formats Required:**
+- Main clauses: `1.`, `2.`, `3.`, `4.`
+- First level subclauses: `1.1`, `1.2`, `1.3`, `2.1`, `2.2`
+- Second level subclauses: `1.1.1`, `1.1.2`, `1.1.3`, `2.1.1`, `2.1.2`
+- Continue this pattern for deeper levels: `1.1.1.1`, `1.1.1.2`, etc.
 
-New contract:
-{new_contract}"""
+**Apply Clause Numbering ONLY to:**
+- Legal clauses and provisions
+- Terms and conditions
+- Numbered legal requirements
+
+**Use Regular Markdown for:**
+- Document headers and titles
+- Introductory paragraphs
+- Signature blocks
+- Recitals and whereas clauses
+
+**3. HIERARCHICAL STRUCTURE REQUIREMENTS**
+- Preserve parent-child relationships between clauses
+- Maintain logical flow from main clauses to subclauses
+- Group related provisions under common parent clauses
+- Update cross-references to match new numbering format
+- Use consistent indentation for hierarchy levels
+- When merging different structures, standardize using the above format
+
+**4. CONTENT INTEGRATION REQUIREMENTS**
+- Merge best practices from both documents
+- Add new relevant clauses from the second document
+- Improve existing clauses where appropriate
+- Include ALL relevant clauses (exclude only those not applicable to template)
+- Preserve exact legal definitions, references, and boilerplate language
+- Maintain all schedules, annexes, and appendices
+- Keep jurisdictional and governing law clauses
+- Preserve signature blocks and execution provisions
+- Maintain all cross-references between clauses
+
+**5. QUALITY STANDARDS**
+- Ensure legal precision and accuracy
+- Maintain professional drafting standards
+- Preserve Hong Kong legal conventions
+- Keep international law firm quality standards
+
+**OUTPUT:** A comprehensive, well-structured legal document template ready for future use with proper placeholder coverage and standardized formatting."""
         
         try:
             self.logger.debug("Sending request to Gemini for template update")
@@ -234,7 +290,8 @@ New contract:
             self.logger.error(f"Failed to update template: {str(e)}", exc_info=True)
             raise
     
-    def add_drafting_notes(self, template_text: str, all_contracts: List[Dict]) -> str:
+
+    def add_drafting_notes(self, template_text: str) -> str:
         """Add comprehensive drafting notes with alternatives from uploaded contracts"""
         self.logger.info("Adding enhanced drafting notes to template")
         
@@ -242,101 +299,301 @@ New contract:
             self.logger.error("API not configured")
             raise ValueError("API not configured")
         
-        # Prepare context from all uploaded contracts for alternative clauses
-        contracts_context = "\n\n".join([
-            f"CONTRACT: {contract['metadata'].get('contract_name', contract.get('filename', 'Unknown'))}\n"
-            f"PARTIES: {', '.join(contract['metadata'].get('parties', []))}\n"
-            f"TEXT EXCERPT: {contract['extracted_text'][:1000]}..."
-            for contract in all_contracts
-        ])
+        # # Prepare context from all uploaded contracts for alternative clauses
+        # contracts_context = "\n\n".join([
+        #     f"CONTRACT: {contract['metadata'].get('contract_name', contract.get('filename', 'Unknown'))}\n"
+        #     f"PARTIES: {', '.join(contract['metadata'].get('parties', []))}\n"
+        #     f"TEXT EXCERPT: {contract['extracted_text'][:1000]}..."
+        #     for contract in all_contracts
+        # ])
         
-        prompt = f"""Using your legal documents, You have created a template for your junior lawyers. Now add comprehensive drafting notes to the template so that your junior lawyers can know when and how to use the template effectively. 
-        Also, keep in mind this is going to be the final version of the template that is going to be used in publication, so in your response only output the template text with the enhancement of drafting notes and alternatives. 
-        Also, ensure the template text in your response is complete as a legal document in accordance with the uploaded contract document or documents, just with added drafting notes and alternative clauses.
+        prompt = f"""Using your legal documents, you have created a template for your junior lawyers. Now add comprehensive drafting notes to the template so that your junior lawyers can know when and how to use the template effectively. You shouldn't change anything in the clauses, I want to have all of them in the following format.
 
-REQUIREMENTS FOR DRAFTING NOTES:
-1. For each clause, add a drafting note immediately after the clause number/heading that explains:
-   - Where this clause should be placed in the template (e.g., "This clause should follow Section 1.1 and precede Section 1.2")
-   - The exact meaning and purpose of the clause
-   - When to use this clause
-   - Legal implications
-   - Example: 
-     "1. Definitions 
-     [DRAFTING NOTE: This clause should be placed at the beginning of the agreement, after the recitals. It defines key terms used throughout the document. Essential for all contracts involving [specific scenario]. Ensures clarity in interpretation and prevents disputes over terminology.]"
-     [Full clause text here...] 
+You must return the response ONLY in JSON format following this exact structure:
 
-2. Format notes as: [DRAFTING NOTE: your detailed note here]
+    {{
+        "general_sections": {{
+            "preamble": "Any introductory text that appears before the numbered clauses",
+            "recitals": "WHEREAS clauses and background information",
+            "definitions": "Key definitions section if not included in numbered clauses",
+            "signature_block": "Template for signature and execution section"
+        }},
+        "clauses": [
+            {{
+                "clause_number": "1.",
+                "clause_type": "Payment Terms Clause",
+                "clause_title": "[Title of the Clause]",
+                "clause_text": "Full text of the main clause with all [Placeholders] intact...",
+                "drafting_note": "Detailed explanation of when and how to use this clause, its purpose, legal implications, and placement guidance...",
+                "subclauses": [
+                    {{
+                        "subclause_number": "1.1",
+                        "subclause_text": "Full text of subclause 1.1 with [Placeholders]...",
+                        "drafting_note": "Explanation of this subclause's specific function, legal implications, and practical advice for customizing...",
+                        "sub_subclauses": [
+                            {{
+                                "sub_subclause_number": "1.1.1",
+                                "sub_subclause_text": "Full text of sub-subclause 1.1.1 with [Placeholders]...",
+                                "drafting_note": "Explanation of this sub-subclause's specific function, legal implications, and practical advice...",
+                                "sub_sub_subclauses": [
+                                    {{
+                                        "sub_sub_subclause_number": "1.1.1.1",
+                                        "sub_sub_subclause_text": "Full text of sub-sub-subclause 1.1.1.1 with [Placeholders]...",
+                                        "drafting_note": "Explanation of this provision, legal implications, and implementation advice...",
+                                        "alternatives": [
+                                            {{
+                                                "alternative_text": "Alternative wording...",
+                                                "drafting_note": "Explanation of this alternative including legal implications and risk assessment...",
+                                                "use_when": "When this alternative should be used"
+                                            }}
+                                        ]
+                                    }}
+                                ],
+                                "alternatives": [
+                                    {{
+                                        "alternative_text": "Alternative wording for this sub-subclause...",
+                                        "drafting_note": "Explanation of this alternative including legal implications and risk assessment...",
+                                        "use_when": "When this alternative should be used"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "alternatives": [
+                            {{
+                                "alternative_text": "Alternative wording for this subclause...",
+                                "drafting_note": "Explanation of this alternative including legal implications, industry considerations, and risk assessment...",
+                                "use_when": "Specific scenario when this alternative should be used"
+                            }}
+                        ]
+                    }}
+                ],
+                "alternatives": [
+                    {{
+                        "alternative_text": "Alternative wording for the entire main clause...",
+                        "drafting_note": "Detailed explanation of this alternative including legal implications, industry considerations, and risk assessment...",
+                        "use_when": "Specific scenario when this alternative should be used instead of the main clause..."
+                    }}
+                ]
+            }},
+            {{
+                "clause_number": "2.",
+                "clause_type": "Scope of Work (Statement of Work) Clause",
+                "clause_title": "[Title of Clause 2]",
+                "clause_text": "Full text of clause 2 with [Placeholders]...",
+                "drafting_note": "Detailed explanation of purpose, positioning advice, usage scenarios, legal implications, implementation guidelines, and risk considerations..."
+            }}
+        ]
+    }}
 
-REQUIREMENTS FOR ALTERNATIVE CLAUSES:
-1. For each clause that has alternatives, add them immediately after the clause with proper numbering and drafting notes explaining the usage of the alternative:
-   Example:
-   "16. Governing Law and Jurisdiction
-   [DRAFTING NOTE: ...]
-   [FULL CLAUSE TEXT HERE]
-   
-   [ALTERNATIVE CLAUSE: Alternative Clause: Arbitration Clause - Use when: Confidentiality and potentially faster resolution are preferred over public court proceedings.]
-   [DRAFTING NOTE: Arbitration is a form of alternative dispute resolution (ADR). It can be faster, more flexible, and is confidential. However, it can also be expensive, and appeal rights are very limited. This is a significant strategic choice. For B2C contracts, forcing arbitration can sometimes be viewed unfavourably by consumers or regulators. This clause should specify the arbitration institution (e.g., HKIAC), the location, language, and number of arbitrators.]"
+**REQUIREMENTS FOR DRAFTING NOTES:**
 
-2. For each alternative, explain:
-   - When it should be used instead
+1. **For each clause, the drafting_note must explain:**
+   - The exact legal meaning and purpose of the clause
+   - Where this clause should be placed in the document
+   - When to use this clause vs alternatives
+   - Legal implications and consequences
+   - Best practices for implementation
+   - Risk assessment and mitigation strategies
+
+2. **For alternative clauses, explain:**
+   - When it should be used instead of the main clause
    - Legal implications of each variation
    - Industry-specific considerations
-   - Risk assessment
+   - Risk assessment compared to main clause
    - Compliance implications
-   - Best practices for selection
 
-3. Format alternatives as: [ALTERNATIVE CLAUSE: alternative formulation - Use when: specific scenario]
+3. **CLAUSE TYPES must be selected from this list:**
+   - **Fundamental Clauses:** Payment Terms Clause, Scope of Work (Statement of Work) Clause, Term & Termination Clause, Price Adjustment / Escalation Clause
+   - **Protective Clauses:** Indemnity Clause, Limitation of Liability Clause, Exemption / Exclusion Clause, Liquidated Damages Clause, Exculpatory Clause, Gross-Up Clause, Retention of Title (Romalpa) Clause
+   - **Dispute Resolution Clauses:** Arbitration Clause, Dispute Resolution / Escalation Clause, Choice of Law Clause, Confession of Judgment Clause
+   - **Confidentiality & IP Clauses:** Confidentiality / Non-Disclosure Clause, Intellectual Property Clause, Non-Compete Clause, Non-Solicitation Clause
+   - **Operational (Boilerplate) Clauses:** Assignment Clause, Change Control / Changes Clause, Amendment Clause, Notice Clause, Severability Clause, Survival Clause, Entire Agreement Clause, Waiver Clause, Interpretation Clause, Electronic Signatures Clause
 
-4. CLAUSE LIST FORMATTING REQUIREMENTS FOR AUTOMATED PROCESSING AND WORD COMPATIBILITY:
-   - ALL numbered items MUST use the following prefix formats - DO NOT use manual numbering like "1." or "1.1" directly:
-     * Main clauses: "NUMBERED_LIST_ITEM: [content]" (replaces 1., 2., 3., etc.)
-     * First-level numerical subclauses: "SUB_NUMBERED_ITEM: [content]" (replaces 1.1, 1.2, etc.)
-     * Second-level numerical subclauses: "SUB_SUB_NUMBERED_ITEM: [content]" (replaces 1.1.1, 1.1.2, etc.)
-     
-     * alphabetical used in main level: "ALPHA_ITEM_MAIN: [content]" (replaces (a), (b), (c), etc.)
-     * alphabetical used in first level subclauses: "SUB_ALPHA_ITEM: [content]" 
-     * alphabetical used in second level subclauses: "SUB_SUB_ALPHA_ITEM: [content]"
+4. **Ensure the template includes:**
+   - All necessary clauses from the uploaded contracts
+   - Complete legal document structure
+   - Logical clause ordering
+   - Comprehensive coverage of all legal aspects
+   - All placeholders properly identified
 
-     * roman numerals used in main level: "ROMAN_ITEM_MAIN: [content]" (replaces (i), (ii), (iii), etc.)
-     * roman numerals used in first level subclauses: "SUB_ROMAN_ITEM: [content]"
-     * roman numerals used in second level subclauses: "SUB_SUB_ROMAN_ITEM: [content]"
-   
-   - For bulleted lists (Either dependent on other lists or standalone):
-     * Main bullet points: "BULLET_ITEM: [content]"
-     * Sub-bullet points: "SUB_BULLET_ITEM: [content]"
-     * Sub-sub bullet points: "SUB_SUB_BULLET_ITEM: [content]"
-   
-   - PRESERVE HIERARCHICAL RELATIONSHIPS:
-     * Maintain the exact same hierarchy and structure as the original document
-     * Ensure parent-child relationships between clauses are preserved
-     * Keep cross-references intact but update to use the new prefix format
-     * The PREFIX must exactly match one of the options above - no variations allowed
-   
-   - USE THESE FORMATTINGS ONLY WHILE WRITING CLAUSE LISTS. WRITE OTHER PARAGRAPHS AND SECTIONS IN REGULAR MARKDOWN FORMAT.
+5. **Placeholder Management:**
+   - Maintain ALL existing [Placeholder] formats
+   - Document all required placeholders with descriptions
+   - Specify data types and requirements
+   - Provide completion guidance
 
-5. CLAUSE RELEVANCE ASSESSMENT:
-   - For each clause, provide clear guidance on when it should be included or excluded
-   - Consider industry-specific requirements
-   - Account for different contract types and purposes
-   - Consider jurisdictional variations
-   - Include risk-based assessment
-   - Provide clear decision criteria
+**Template to enhance (follow exactly, do not change clauses):**
+{template_text}
 
-UPLOADED CONTRACTS FOR REFERENCE:
-{contracts_context}
-
-Template to enhance:
-{template_text}"""
+**IMPORTANT:** Return ONLY the JSON response. Do not include any other text or explanation outside the JSON structure"""
         
         try:
-            self.logger.debug("Sending request to Gemini for enhanced drafting notes")
-            template_with_notes = self._call_gemini(prompt)
-            
-            self.logger.info("Successfully added enhanced drafting notes")
-            return template_with_notes
+            self.logger.debug("Sending request to Gemini for enhanced drafting notes (schema mode)")
+            try:
+                template_with_notes = self.api_config.generate_text(
+                    prompt=prompt,
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
+                )
+            except Exception as schema_err:
+                # Log and fallback to simpler JSON generation without schema
+                self.logger.error(f"Schema-based generation failed: {schema_err}. Falling back to simple JSON generation")
+                template_with_notes = self.api_config.generate_text(
+                    prompt=prompt,
+                    temperature=0.1,
+                    response_format={"type": "json_object"}
+                )
+
+            # Validate that the response is valid JSON
+            try:
+                json.loads(template_with_notes)
+                self.logger.info("Successfully added enhanced drafting notes")
+                return template_with_notes
+            except json.JSONDecodeError as json_error:
+                self.logger.warning(f"Initial response was invalid JSON: {str(json_error)}, attempting repair")
+                repaired_response = self.repair_json_response_template(template_with_notes)
+                if repaired_response:
+                    return repaired_response
+                else:
+                    self.logger.error("Failed to repair JSON response, returning original template")
+                    return template_text
             
         except Exception as e:
-            self.logger.error(f"Failed to add drafting notes: {str(e)}", exc_info=True)
+            self.logger.error("Failed to add drafting notes: {}", str(e), exc_info=True)
+            raise
+
+    def repair_json_response_template(self, invalid_json: str) -> str:
+        """Use a second LLM call to repair invalid JSON responses"""
+        # First, try to identify the specific error
+        error_message = "Unknown JSON error"
+        try:
+            json.loads(invalid_json)
+        except json.JSONDecodeError as e:
+            error_message = str(e)
+            
+        repair_prompt = f"""You are a JSON repair expert. The following text is a JSON response that has validation errors or is malformed.
+    Your task is to fix the JSON and return a properly formatted valid JSON object.
+
+    Common JSON errors to fix:
+    1. Missing quotes around keys or values
+    2. Trailing commas
+    3. Unescaped quotes within strings
+    4. Missing commas between objects/arrays
+    5. Mismatched brackets or braces
+    6. Incorrect nesting of objects or arrays
+
+    The JSON should have the following structure:
+    {{
+        "general_sections": {{
+            "preamble": "Any introductory text that appears before the numbered clauses",
+            "recitals": "WHEREAS clauses and background information",
+            "definitions": "Key definitions section if not included in numbered clauses",
+            "signature_block": "Template for signature and execution section"
+        }},
+        "clauses": [
+            {{
+                "clause_number": "1.",
+                "clause_type": "Payment Terms Clause",
+                "clause_title": "[Title of the Clause]",
+                "clause_text": "Full text of the main clause with all [Placeholders] intact...",
+                "drafting_note": "Detailed explanation of when and how to use this clause, its purpose, legal implications, and placement guidance...",
+                "subclauses": [
+                    {{
+                        "subclause_number": "1.1",
+                        "subclause_text": "Full text of subclause 1.1 with [Placeholders]...",
+                        "drafting_note": "Explanation of this subclause's specific function, legal implications, and practical advice for customizing...",
+                        "sub_subclauses": [
+                            {{
+                                "sub_subclause_number": "1.1.1",
+                                "sub_subclause_text": "Full text of sub-subclause 1.1.1 with [Placeholders]...",
+                                "drafting_note": "Explanation of this sub-subclause's specific function, legal implications, and practical advice...",
+                                "sub_sub_subclauses": [
+                                    {{
+                                        "sub_sub_subclause_number": "1.1.1.1",
+                                        "sub_sub_subclause_text": "Full text of sub-sub-subclause 1.1.1.1 with [Placeholders]...",
+                                        "drafting_note": "Explanation of this provision, legal implications, and implementation advice...",
+                                        "alternatives": [
+                                            {{
+                                                "alternative_text": "Alternative wording...",
+                                                "drafting_note": "Explanation of this alternative including legal implications and risk assessment...",
+                                                "use_when": "When this alternative should be used"
+                                            }}
+                                        ]
+                                    }}
+                                ],
+                                "alternatives": [
+                                    {{
+                                        "alternative_text": "Alternative wording for this sub-subclause...",
+                                        "drafting_note": "Explanation of this alternative including legal implications and risk assessment...",
+                                        "use_when": "When this alternative should be used"
+                                    }}
+                                ]
+                            }}
+                        ],
+                        "alternatives": [
+                            {{
+                                "alternative_text": "Alternative wording for this subclause...",
+                                "drafting_note": "Explanation of this alternative including legal implications, industry considerations, and risk assessment...",
+                                "use_when": "Specific scenario when this alternative should be used"
+                            }}
+                        ]
+                    }}
+                ],
+                "alternatives": [
+                    {{
+                        "alternative_text": "Alternative wording for the entire main clause...",
+                        "drafting_note": "Detailed explanation of this alternative including legal implications, industry considerations, and risk assessment...",
+                        "use_when": "Specific scenario when this alternative should be used instead of the main clause..."
+                    }}
+                ]
+            }},
+            {{
+                "clause_number": "2.",
+                "clause_type": "Scope of Work (Statement of Work) Clause",
+                "clause_title": "[Title of Clause 2]",
+                "clause_text": "Full text of clause 2 with [Placeholders]...",
+                "drafting_note": "Detailed explanation of purpose, positioning advice, usage scenarios, legal implications, implementation guidelines, and risk considerations..."
+            }}
+        ]
+    }}
+
+    PREDEFINED CLAUSE TYPES (clause_type field MUST be exactly one of these values):
+    - Fundamental Clauses: "Payment Terms Clause", "Scope of Work (Statement of Work) Clause", "Term & Termination Clause", "Price Adjustment / Escalation Clause"
+    - Protective Clauses: "Indemnity Clause", "Limitation of Liability Clause", "Exemption / Exclusion Clause", "Liquidated Damages Clause", "Exculpatory Clause", "Gross-Up Clause", "Retention of Title (Romalpa) Clause"
+    - Dispute Resolution Clauses: "Arbitration Clause", "Dispute Resolution / Escalation Clause", "Choice of Law Clause", "Confession of Judgment Clause"
+    - Confidentiality & IP Clauses: "Confidentiality / Non-Disclosure Clause", "Intellectual Property Clause", "Non-Compete Clause", "Non-Solicitation Clause"
+    - Operational (Boilerplate) Clauses: "Assignment Clause", "Change Control / Changes Clause", "Amendment Clause", "Notice Clause", "Severability Clause", "Survival Clause", "Entire Agreement Clause", "Waiver Clause", "Interpretation Clause", "Electronic Signatures Clause"
+
+    IMPORTANT RULES:
+    1. Inside any field that contains text from the contract (like "clause_text", "drafting_note"), you MUST escape any double quotes (") with a backslash (\\"). For example, if the text is 'The term "Agreement"...', it must be represented in the JSON as '"clause_text": "The term \\"Agreement\\"..."'.
+    2. The "clause_type" field must match exactly one of the predefined clause types listed above
+    3. "subclauses", "sub_subclauses", "sub_sub_subclauses", and "alternatives" are optional fields
+    4. Ensure proper nesting and comma placement
+    5. Remove any trailing commas
+    6. Maintain the hierarchical numbering system (1., 1.1, 1.1.1, 1.1.1.1)
+    7. All [Placeholders] should remain in square brackets format
+    8. Do not add any explanations or comments, just return the fixed JSON
+
+    JSON Error Found: {error_message}
+
+    Invalid JSON:
+    {invalid_json}"""
+
+        try:
+            self.logger.debug("Sending JSON repair request to Gemini")
+            repaired_json = self.api_config.generate_text(
+                prompt=repair_prompt,
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            
+            # Validate the repaired JSON
+            json.loads(repaired_json)
+            self.logger.info("Successfully repaired JSON")
+            return repaired_json
+            
+        except Exception as e:
+            self.logger.error(f"Failed to repair JSON: {str(e)}", exc_info=True)
             raise
     
     def extract_metadata(self, contract_text: str) -> Dict[str, Any]:
@@ -426,20 +683,14 @@ Here's the document:
         if not template_content or len(template_content.strip()) == 0:
             self.logger.warning("❌ Empty template content provided")
             return []
-        
-        # Truncate very long content to prevent API limits
-        max_content_length = 100000  # 100k characters
-        if len(template_content) > max_content_length:
-            self.logger.warning(f"⚠️  Template content too long ({len(template_content)} chars), truncating to {max_content_length}")
-            template_content = template_content[:max_content_length] + "\n\n[Content truncated due to length]"
 
         prompt = f"""You are an experienced legal analyst with expertise in contract clause identification and classification.
         
 TASK:
-Extract all legal clauses present in the provided template content and categorize them in the same format used for the clause library.
+    Extract all legal clauses present in the provided template content and categorize them using the predefined clause types.
 
 For each clause, identify:
-1. Clause type (e.g., definitions, payment, termination, liability, intellectual_property, confidentiality, dispute_resolution, governing_law, force_majeure, etc.)
+    1. Clause type (MUST be one of the predefined types listed below)
 2. The complete clause text (preserve exact wording)
 3. Its position/context in the contract (e.g., "Section 3", "Article 5.2")
 4. Clause purpose/function
@@ -451,24 +702,30 @@ For each clause, identify:
    - Compliance requirements
    - Best practices for implementation
 
+    PREDEFINED CLAUSE TYPES (you MUST use exactly these values):
+    - Fundamental Clauses: "Payment Terms Clause", "Scope of Work (Statement of Work) Clause", "Term & Termination Clause", "Price Adjustment / Escalation Clause"
+    - Protective Clauses: "Indemnity Clause", "Limitation of Liability Clause", "Exemption / Exclusion Clause", "Liquidated Damages Clause", "Exculpatory Clause", "Gross-Up Clause", "Retention of Title (Romalpa) Clause"
+    - Dispute Resolution Clauses: "Arbitration Clause", "Dispute Resolution / Escalation Clause", "Choice of Law Clause", "Confession of Judgment Clause"
+    - Confidentiality & IP Clauses: "Confidentiality / Non-Disclosure Clause", "Intellectual Property Clause", "Non-Compete Clause", "Non-Solicitation Clause"
+    - Operational (Boilerplate) Clauses: "Assignment Clause", "Change Control / Changes Clause", "Amendment Clause", "Notice Clause", "Severability Clause", "Survival Clause", "Entire Agreement Clause", "Waiver Clause", "Interpretation Clause", "Electronic Signatures Clause"
+
 IMPORTANT INSTRUCTIONS:
 - Identify ALL distinct clauses in the template
 - Maintain the EXACT text of each clause (including placeholders in square brackets)
-- Each clause should be categorized by type
+    - Each clause MUST be categorized using one of the predefined clause types listed above
 - Ensure every important legal provision is captured
 - Do not omit any clauses, even if they seem standard
 - Ensure the output matches the required schema format exactly and is valid JSON
 - Include comprehensive relevance assessment for each clause
-- Ensure that the order of clauses matches their appearance in the template and that the hierarchy is preserved.
+    - Ensure that the order of clauses matches their appearance in the template and that the hierarchy is preserved
 
 IMPORTANT: Inside any field that contains text from the contract (like "clause_text"), you MUST escape any double quotes (") with a backslash (\\"). For example, if the text is 'The term "Agreement"...', it must be represented in the JSON as '"clause_text": "The term \\"Agreement\\"..."'.
-
 
 Return the result as a valid JSON object with a "clauses" array containing objects with the following structure:
 {{
   "clauses": [
     {{
-      "clause_type": "payment",
+        "clause_type": "Payment Terms Clause",
       "clause_text": "complete exact clause text with placeholders preserved",
       "position_context": "Section 3.1 - Payment Terms",
       "clause_purpose": "Establishes payment obligations and timing",
@@ -514,7 +771,7 @@ Template content:
                 except (json.JSONDecodeError, ValueError) as json_error:
                     # If there's a JSON parsing error, try to repair it with a second LLM call
                     self.logger.warning(f"⚠️  JSON validation failed: {str(json_error)}, attempting repair")
-                    repaired_json = self._repair_json_response(response)
+                    repaired_json = self._repair_json_response_clause_extraction(response)
                     
                     if not repaired_json:
                         self.logger.error("❌ Failed to repair JSON response")
@@ -552,10 +809,10 @@ Template content:
                 return []
                 
         except Exception as e:
-            self.logger.error(f"❌ Failed to extract clauses from template: {str(e)}", exc_info=True)
+            self.logger.error(f"Failed to extract clauses: {str(e)}", exc_info=True)
             return []
     
-    def _repair_json_response(self, invalid_json: str) -> str:
+    def _repair_json_response_clause_extraction(self, invalid_json: str) -> str:
         """Use a second LLM call to repair invalid JSON responses"""
         # First, try to identify the specific error
         error_message = "Unknown JSON error"
@@ -567,31 +824,73 @@ Template content:
         repair_prompt = f"""You are a JSON repair expert. The following text is a JSON response that has validation errors or is malformed.
 Your task is to fix the JSON and return a properly formatted valid JSON object.
 
+    Common JSON errors to fix:
+    1. Missing quotes around keys or values
+    2. Trailing commas
+    3. Unescaped quotes within strings
+    4. Missing commas between objects/arrays
+    5. Mismatched brackets or braces
 6. Incorrect nesting of objects or arrays
 
 The JSON should have the following structure:
 {{
+        "general_text": "Any general introductory text or preamble that appears before the numbered clauses",
   "clauses": [
     {{
-      "clause_type": "string",
-      "clause_text": "string",
-      "position_context": "string",
-      "clause_purpose": "string",
-      "relevance_assessment": {{
-        "when_to_include": ["string"],
-        "when_to_exclude": ["string"],
-        "industry_considerations": ["string"],
-        "risk_implications": ["string"],
-        "compliance_requirements": ["string"],
-        "best_practices": ["string"]
-      }}
+                "type": "Payment Terms Clause",
+                "clause_text": "Full text of the main clause...",
+                "drafting_note": "Detailed explanation of when and how to use this clause...",
+                "subclauses": [
+                    {{
+                        "subclause_number": "1.1",
+                        "subclause_text": "Full text of subclause 1.1...",
+                        "drafting_note": "Explanation of this subclause...",
+                        "alternatives": [
+                            {{
+                                "alternative_text": "Alternative wording for this subclause...",
+                                "drafting_note": "Explanation of this alternative...",
+                                "use_when": "Specific scenario when this alternative should be used..."
+                            }}
+                        ]
+                    }},
+                    {{
+                        "subclause_number": "1.2",
+                        "subclause_text": "Full text of subclause 1.2...",
+                        "drafting_note": "Explanation of this subclause..."
+                    }}
+                ],
+                "alternatives": [
+                    {{
+                        "alternative_text": "Alternative wording for the main clause...",
+                        "drafting_note": "Detailed explanation of this alternative...",
+                        "use_when": "Specific scenario when this alternative should be used..."
+                    }}
+                ]
+            }},
+            {{
+                "type": "Scope of Work (Statement of Work) Clause",
+                "clause_text": "Full text of clause 2...",
+                "drafting_note": "Detailed explanation..."
     }}
   ]
 }}
 
-IMPORTANT: Inside any field that contains text from the contract (like "clause_text"), you MUST escape any double quotes (") with a backslash (\\"). For example, if the text is 'The term "Agreement"...', it must be represented in the JSON as '"clause_text": "The term \\"Agreement\\"..."'.
+    PREDEFINED CLAUSE TYPES (type field MUST be exactly one of these values):
+    - Fundamental Clauses: "Payment Terms Clause", "Scope of Work (Statement of Work) Clause", "Term & Termination Clause", "Price Adjustment / Escalation Clause"
+    - Protective Clauses: "Indemnity Clause", "Limitation of Liability Clause", "Exemption / Exclusion Clause", "Liquidated Damages Clause", "Exculpatory Clause", "Gross-Up Clause", "Retention of Title (Romalpa) Clause"
+    - Dispute Resolution Clauses: "Arbitration Clause", "Dispute Resolution / Escalation Clause", "Choice of Law Clause", "Confession of Judgment Clause"
+    - Confidentiality & IP Clauses: "Confidentiality / Non-Disclosure Clause", "Intellectual Property Clause", "Non-Compete Clause", "Non-Solicitation Clause"
+    - Operational (Boilerplate) Clauses: "Assignment Clause", "Change Control / Changes Clause", "Amendment Clause", "Notice Clause", "Severability Clause", "Survival Clause", "Entire Agreement Clause", "Waiver Clause", "Interpretation Clause", "Electronic Signatures Clause"
 
-Do not add any explanations or comments, just return the fixed JSON.
+    IMPORTANT RULES:
+    1. Inside any field that contains text from the contract (like "clause_text", "drafting_note"), you MUST escape any double quotes (") with a backslash (\\"). For example, if the text is 'The term "Agreement"...', it must be represented in the JSON as '"clause_text": "The term \\"Agreement\\"..."'.
+    2. The "type" field must match exactly one of the predefined clause types listed above
+    3. "subclauses" and "alternatives" are optional fields
+    4. Ensure proper nesting and comma placement
+    5. Remove any trailing commas
+    6. Do not add any explanations or comments, just return the fixed JSON
+
+    JSON Error Found: {error_message}
 
 Invalid JSON:
 {invalid_json}"""
@@ -617,6 +916,7 @@ Invalid JSON:
             self.logger.error(f"Failed to repair JSON: {str(e)}", exc_info=True)
             return ""
 
+        
     def update_template_new_files(self, current_template: str, new_contract: str) -> str:
         """Update existing template with new contract content while preserving existing structure"""
         self.logger.info("Updating existing template with new contract content")
@@ -627,97 +927,96 @@ Invalid JSON:
         
         prompt = f"""You are an experienced solicitor in Hong Kong with decades of experience. You are the senior partner of an international law firm. 
 
-CONTEXT:
-You have an existing template that has already been refined through extensive iterations. This template contains:
-- Well-crafted legal language
-- Comprehensive drafting notes
-- Alternative clauses for different scenarios
-- Proper formatting and structure
-- Detailed guidance for junior lawyers
+    CONTEXT:
+    You have an existing template that has already been refined through extensive iterations. This template contains:
+    - Well-crafted legal language
+    - Comprehensive drafting notes
+    - Alternative clauses for different scenarios
+    - Proper formatting and structure
+    - Detailed guidance for junior lawyers
 
-TASK:
-Update this existing template by intelligently incorporating content from a new legal document. The goal is to enhance the template without disrupting its existing quality and structure.
+    TASK:
+    Update this existing template by intelligently incorporating content from a new legal document. The goal is to enhance the template without disrupting its existing quality and structure.
 
-CRITICAL REQUIREMENTS:
+    CRITICAL REQUIREMENTS:
 
-1. PRESERVE AND ENHANCE EXISTING CONTENT:
-   - ENHANCE existing drafting notes with new insights from the new contract
-   - UPDATE drafting notes to reflect any improvements or additional considerations
-   - Maintain ALL existing alternative clauses and their explanations (but can improve them)
-   - Preserve the existing template structure and organization
-   - Keep all existing placeholder formats [Placeholder Name]
-   - Keep all existing [DRAFTING NOTE: ...] and [ALTERNATIVE CLAUSE: ...] formatting
-   - Maintain existing legal language and terminology (but can improve it)
+    1. PRESERVE AND ENHANCE EXISTING CONTENT:
+    - ENHANCE existing drafting notes with new insights from the new contract
+    - UPDATE drafting notes to reflect any improvements or additional considerations
+    - Maintain ALL existing alternative clauses and their explanations (but can improve them)
+    - Preserve the existing template structure and organization
+    - Keep all existing placeholder formats [Placeholder Name]
+    - Keep all existing [DRAFTING NOTE: ...] and [ALTERNATIVE CLAUSE: ...] formatting
+    - Maintain existing legal language and terminology (but can improve it)
 
-2. INTELLIGENT INTEGRATION:
-   - Only add new content where it genuinely enhances the template
-   - If a clause in the new contract is similar to an existing clause, improve the existing clause rather than replacing it
-   - Add new clauses only if they bring significant value not already covered
-   - If the new contract has better language for an existing concept, enhance the existing clause
-   - Add new alternative clauses if the new contract provides genuinely different approaches
-   - UPDATE existing drafting notes with new insights, enhanced explanations, and additional considerations from the new contract
+    2. INTELLIGENT INTEGRATION:
+    - Only add new content where it genuinely enhances the template
+    - If a clause in the new contract is similar to an existing clause, improve the existing clause rather than replacing it
+    - Add new clauses only if they bring significant value not already covered
+    - If the new contract has better language for an existing concept, enhance the existing clause
+    - Add new alternative clauses if the new contract provides genuinely different approaches
+    - UPDATE existing drafting notes with new insights, enhanced explanations, and additional considerations from the new contract
 
-3. ENHANCEMENT APPROACH:
-   - Enhance existing clauses with better language from the new contract
-   - Add new placeholders if the new contract reveals additional variable fields
-   - UPDATE and IMPROVE existing drafting notes with new insights and considerations
-   - Add enhanced explanations to existing drafting notes based on new contract learnings
-   - Add new alternative clauses only if they represent genuinely different legal approaches
-   - Strengthen existing provisions with additional protections or clarity from the new contract
-   - For each [DRAFTING NOTE: ...], review and enhance with new insights from the new contract where relevant
-   - For each [ALTERNATIVE CLAUSE: ...], review and enhance explanations with new insights from the new contract where relevant
+    3. ENHANCEMENT APPROACH:
+    - Enhance existing clauses with better language from the new contract
+    - Add new placeholders if the new contract reveals additional variable fields
+    - UPDATE and IMPROVE existing drafting notes with new insights and considerations
+    - Add enhanced explanations to existing drafting notes based on new contract learnings
+    - Add new alternative clauses only if they represent genuinely different legal approaches
+    - Strengthen existing provisions with additional protections or clarity from the new contract
+    - For each [DRAFTING NOTE: ...], review and enhance with new insights from the new contract where relevant
+    - For each [ALTERNATIVE CLAUSE: ...], review and enhance explanations with new insights from the new contract where relevant
 
-4. FORMATTING CONSISTENCY:
-   - Maintain all existing PREFIX formats for numbered lists:
-     * NUMBERED_LIST_ITEM: [content]
-     * SUB_NUMBERED_ITEM: [content]
-     * SUB_SUB_NUMBERED_ITEM: [content]
-     * ALPHA_ITEM_MAIN: [content]
-     * SUB_ALPHA_ITEM: [content]
-     * And all other existing formats
-   - Preserve existing hierarchical structure
-   - Keep existing cross-references and internal consistency
+    4. FORMATTING CONSISTENCY:
+    - Maintain all existing PREFIX formats for numbered lists:
+        * NUMBERED_LIST_ITEM: [content]
+        * SUB_NUMBERED_ITEM: [content]
+        * SUB_SUB_NUMBERED_ITEM: [content]
+        * ALPHA_ITEM_MAIN: [content]
+        * SUB_ALPHA_ITEM: [content]
+        * And all other existing formats
+    - Preserve existing hierarchical structure
+    - Keep existing cross-references and internal consistency
 
-5. WHAT NOT TO DO:
-   - Do NOT remove existing drafting notes (but you CAN enhance and update them)
-   - Do NOT remove existing alternative clauses (but you CAN improve them)
-   - Do NOT change existing formatting or structure unnecessarily
-   - Do NOT change existing [DRAFTING NOTE: ...] or [ALTERNATIVE CLAUSE: ...] formatting
-   - Do NOT replace well-crafted existing clauses unless the new version is significantly better
-   - Do NOT add redundant content that duplicates existing provisions
+    5. WHAT NOT TO DO:
+    - Do NOT remove existing drafting notes (but you CAN enhance and update them)
+    - Do NOT remove existing alternative clauses (but you CAN improve them)
+    - Do NOT change existing formatting or structure unnecessarily
+    - Do NOT change existing [DRAFTING NOTE: ...] or [ALTERNATIVE CLAUSE: ...] formatting
+    - Do NOT replace well-crafted existing clauses unless the new version is significantly better
+    - Do NOT add redundant content that duplicates existing provisions
 
-6. DRAFTING NOTES ENHANCEMENT:
-   - UPDATE existing drafting notes with new insights from the new contract
-   - ADD additional considerations and best practices discovered in the new contract
-   - ENHANCE existing guidance with more comprehensive explanations
-   - UPDATE existing [DRAFTING NOTE: ...] sections with new insights and considerations
-   - IMPROVE risk assessments and compliance considerations based on new contract
-   - EXPAND "when to use" and "when not to use" guidance where the new contract provides insights
-   - STRENGTHEN existing alternative clause explanations with additional context
-   - UPDATE existing [ALTERNATIVE CLAUSE: ...] sections with new insights and considerations
-   - For each [ALTERNATIVE CLAUSE: ...], review and enhance explanations with new insights
+    6. DRAFTING NOTES ENHANCEMENT:
+    - UPDATE existing drafting notes with new insights from the new contract
+    - ADD additional considerations and best practices discovered in the new contract
+    - ENHANCE existing guidance with more comprehensive explanations
+    - UPDATE existing [DRAFTING NOTE: ...] sections with new insights and considerations
+    - IMPROVE risk assessments and compliance considerations based on new contract
+    - EXPAND "when to use" and "when not to use" guidance where the new contract provides insights
+    - STRENGTHEN existing alternative clause explanations with additional context
+    - UPDATE existing [ALTERNATIVE CLAUSE: ...], review and enhance explanations with new insights
 
-7. INTEGRATION STRATEGY:
-   - Review each section of the new contract against the existing template
-   - Identify genuine improvements or new concepts
-   - Enhance existing clauses with better language where appropriate
-   - Add new clauses only where they fill genuine gaps
-   - Ensure any additions maintain the existing template's quality and style
+    7. INTEGRATION STRATEGY:
+    - Review each section of the new contract against the existing template
+    - Identify genuine improvements or new concepts
+    - Enhance existing clauses with better language where appropriate
+    - Add new clauses only where they fill genuine gaps
+    - Ensure any additions maintain the existing template's quality and style
 
-7. OUTPUT REQUIREMENTS:
-   - Return the complete updated template
-   - Maintain all existing quality and comprehensiveness
-   - Ensure the template remains cohesive and well-organized
-   - Preserve all existing guidance for junior lawyers
-   - Keep all existing professional formatting and presentation
+    7. OUTPUT REQUIREMENTS:
+    - Return the complete updated template
+    - Maintain all existing quality and comprehensiveness
+    - Ensure the template remains cohesive and well-organized
+    - Preserve all existing guidance for junior lawyers
+    - Keep all existing professional formatting and presentation
 
-EXISTING TEMPLATE:
-{current_template}
+    EXISTING TEMPLATE:
+    {current_template}
 
-NEW CONTRACT FOR INTEGRATION:
-{new_contract}
+    NEW CONTRACT FOR INTEGRATION:
+    {new_contract}
 
-Please update the template by intelligently incorporating the best elements from the new contract while preserving all existing quality, structure, and guidance. Pay special attention to updating and enhancing existing drafting notes with new insights, considerations, and improved explanations based on what you learn from the new contract."""
+    Please update the template by intelligently incorporating the best elements from the new contract while preserving all existing quality, structure, and guidance. Pay special attention to updating and enhancing existing drafting notes with new insights, considerations, and improved explanations based on what you learn from the new contract."""
         
         try:
             self.logger.debug("Sending request to Gemini for intelligent template update")

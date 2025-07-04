@@ -288,108 +288,108 @@ class TemplateGenerationJobManager(JobManager):
         
         return processed_count
     
-    def _generate_template_content_sync(
-        self, 
-        folder_id: str, 
-        priority_template_id: str, 
-        file_ids: List[str],
-        job_id: str
-    ) -> str:
-        """Synchronous template generation for thread execution"""
-        try:
-            logger.info(f"Starting synchronous template generation for job {job_id}")
+    # def _generate_template_content_sync(
+    #     self, 
+    #     folder_id: str, 
+    #     priority_template_id: str, 
+    #     file_ids: List[str],
+    #     job_id: str
+    # ) -> str:
+    #     """Synchronous template generation for thread execution"""
+    #     try:
+    #         logger.info(f"Starting synchronous template generation for job {job_id}")
             
-            # Get processed files with their content
-            processed_files = []
+    #         # Get processed files with their content
+    #         processed_files = []
             
-            for file_id in file_ids:
-                # Get file with markdown content and metadata
-                file_response = self.db.client.from_("files").select(
-                    "*, markdown_content(content)"
-                ).eq("id", file_id).eq("status", "processed").execute()
+    #         for file_id in file_ids:
+    #             # Get file with markdown content and metadata
+    #             file_response = self.db.client.from_("files").select(
+    #                 "*, markdown_content(content)"
+    #             ).eq("id", file_id).eq("status", "processed").execute()
                 
-                if file_response.data and file_response.data[0].get("markdown_content"):
-                    file_data = file_response.data[0]
-                    markdown_content = file_data["markdown_content"][0]["content"]
+    #             if file_response.data and file_response.data[0].get("markdown_content"):
+    #                 file_data = file_response.data[0]
+    #                 markdown_content = file_data["markdown_content"][0]["content"]
                     
-                    # Truncate very large content to prevent timeouts
-                    max_content_length = 25000  # Reduced to 25k characters per file
-                    if len(markdown_content) > max_content_length:
-                        logger.warning(f"File {file_id} content too large ({len(markdown_content)} chars), truncating")
-                        markdown_content = markdown_content[:max_content_length] + "\n\n[Content truncated due to length]"
+    #                 # Truncate very large content to prevent timeouts
+    #                 max_content_length = 25000  # Reduced to 25k characters per file
+    #                 if len(markdown_content) > max_content_length:
+    #                     logger.warning(f"File {file_id} content too large ({len(markdown_content)} chars), truncating")
+    #                     markdown_content = markdown_content[:max_content_length] + "\n\n[Content truncated due to length]"
                     
-                    processed_files.append({
-                        'file_id': file_data['id'],
-                        'filename': file_data['original_filename'],
-                        'extracted_text': markdown_content,
-                        'metadata': file_data.get('extracted_metadata', {}),
-                    })
+    #                 processed_files.append({
+    #                     'file_id': file_data['id'],
+    #                     'filename': file_data['original_filename'],
+    #                     'extracted_text': markdown_content,
+    #                     'metadata': file_data.get('extracted_metadata', {}),
+    #                 })
             
-            if not processed_files:
-                raise Exception("No processed files with content found")
+    #         if not processed_files:
+    #             raise Exception("No processed files with content found")
             
-            # Update progress
-            self.update_job_step(job_id, "generate_template", "processing", 40)
+    #         # Update progress
+    #         self.update_job_step(job_id, "generate_template", "processing", 40)
             
-            # Reorder files to put priority file first
-            if priority_template_id:
-                priority_file = next((f for f in processed_files if f['file_id'] == priority_template_id), None)
-                if priority_file:
-                    processed_files.remove(priority_file)
-                    processed_files.insert(0, priority_file)
+    #         # Reorder files to put priority file first
+    #         if priority_template_id:
+    #             priority_file = next((f for f in processed_files if f['file_id'] == priority_template_id), None)
+    #             if priority_file:
+    #                 processed_files.remove(priority_file)
+    #                 processed_files.insert(0, priority_file)
             
-            # Limit number of files to prevent timeout
-            max_files = 3  # Reduced to 3 files to prevent timeout
-            if len(processed_files) > max_files:
-                logger.warning(f"Too many files ({len(processed_files)}), limiting to {max_files}")
-                processed_files = processed_files[:max_files]
+    #         # Limit number of files to prevent timeout
+    #         max_files = 3  # Reduced to 3 files to prevent timeout
+    #         if len(processed_files) > max_files:
+    #             logger.warning(f"Too many files ({len(processed_files)}), limiting to {max_files}")
+    #             processed_files = processed_files[:max_files]
             
-            # Generate template using TemplateGenerator
-            if len(processed_files) == 1:
-                # Single file
-                template_content = self.template_generator.generate_initial_template(
-                    processed_files[0]['extracted_text']
-                )
-            else:
-                # Multiple files - but limit to avoid timeouts
-                first_contract = processed_files[0]
-                template_content = self.template_generator.generate_initial_template(
-                    first_contract['extracted_text']
-                )
+    #         # Generate template using TemplateGenerator
+    #         if len(processed_files) == 1:
+    #             # Single file
+    #             template_content = self.template_generator.generate_initial_template(
+    #                 processed_files[0]['extracted_text']
+    #             )
+    #         else:
+    #             # Multiple files - but limit to avoid timeouts
+    #             first_contract = processed_files[0]
+    #             template_content = self.template_generator.generate_initial_template(
+    #                 first_contract['extracted_text']
+    #             )
                 
-                # Update progress
-                self.update_job_step(job_id, "generate_template", "processing", 60)
+    #             # Update progress
+    #             self.update_job_step(job_id, "generate_template", "processing", 60)
                 
-                # Update template with additional contracts (limit to 2 additional)
-                for contract in processed_files[1:2]:  # Only process 1 additional file
-                    template_content = self.template_generator.update_template(
-                        template_content, contract['extracted_text']
-                    )
+    #             # Update template with additional contracts (limit to 2 additional)
+    #             for contract in processed_files[1:2]:  # Only process 1 additional file
+    #                 template_content = self.template_generator.update_template(
+    #                     template_content, contract['extracted_text']
+    #                 )
             
-            # Update progress
-            self.update_job_step(job_id, "generate_template", "processing", 80)
+    #         # Update progress
+    #         self.update_job_step(job_id, "generate_template", "processing", 80)
             
-            # Skip drafting notes for now to prevent timeout
-            final_template = self.template_generator.add_drafting_notes(
-                template_content, processed_files
-            )
+    #         # Add drafting notes
+    #         final_template = self.template_generator.add_drafting_notes(
+    #             template_content
+    #         )
             
-            logger.info(f"Template generation completed for job {job_id}")
-            return final_template
+    #         logger.info(f"Template generation completed for job {job_id}")
+    #         return final_template
             
-        except Exception as e:
-            logger.error(f"Synchronous template generation failed: {str(e)}")
-            raise Exception(f"AI template generation failed: {str(e)}")
+    #     except Exception as e:
+    #         logger.error(f"Synchronous template generation failed: {str(e)}")
+    #         raise Exception(f"AI template generation failed: {str(e)}")
     
-    async def _generate_template_content(
-        self, 
-        folder_id: str, 
-        priority_template_id: str, 
-        file_ids: List[str],
-        job_id: str
-    ) -> str:
-        """DEPRECATED: Use _generate_template_content_sync instead"""
-        return self._generate_template_content_sync(folder_id, priority_template_id, file_ids, job_id)
+    # async def _generate_template_content(
+    #     self, 
+    #     folder_id: str, 
+    #     priority_template_id: str, 
+    #     file_ids: List[str],
+    #     job_id: str
+    # ) -> str:
+    #     """DEPRECATED: Use _generate_template_content_sync instead"""
+    #     return self._generate_template_content_sync(folder_id, priority_template_id, file_ids, job_id)
     
 
     async def _save_template_to_database(
@@ -674,42 +674,53 @@ class CacheRefreshManager:
             # Process results (similar to fetch_templates_from_db but sync)
             templates = []
             for item in result.data:
-                folder = item.get("folders", {})
-                usage_stats = item.get("template_usage_stats", [])
+                try:
+                    folder = item.get("folders") or {}  # Handle None case
+                    usage_stats = item.get("template_usage_stats", [])
 
-                # Get most recent action
-                last_action = None
-                last_action_date = None
-                if usage_stats:
-                    sorted_stats = sorted(usage_stats, key=lambda x: x.get("created_at", ""), reverse=True)
-                    if sorted_stats:
-                        last_action = sorted_stats[0].get("action_type")
-                        last_action_date = sorted_stats[0].get("created_at")
+                    # Get most recent action
+                    last_action = None
+                    last_action_date = None
+                    if usage_stats:
+                        sorted_stats = sorted(usage_stats, key=lambda x: x.get("created_at", ""), reverse=True)
+                        if sorted_stats:
+                            last_action = sorted_stats[0].get("action_type")
+                            last_action_date = sorted_stats[0].get("created_at")
 
-                # Count files for this folder
-                files_response = client.table("files").select("*", count="exact").eq("folder_id", item.get("folder_id")).execute()
-                files_count = files_response.count or 0
+                    # Count files for this folder
+                    folder_id = item.get("folder_id")
+                    files_count = 0
+                    if folder_id:
+                        try:
+                            files_response = client.table("files").select("*", count="exact").eq("folder_id", folder_id).execute()
+                            files_count = files_response.count or 0
+                        except Exception as e:
+                            logger.warning(f"Could not count files for folder {folder_id}: {e}")
 
-                template_data = {
-                    "id": item.get("id"),
-                    "folder_id": item.get("folder_id"),
-                    "name": item.get("name"),
-                    "content": item.get("content"),
-                    "template_type": item.get("template_type"),
-                    "file_extension": item.get("file_extension"),
-                    "formatting_data": item.get("formatting_data"),
-                    "word_compatible": item.get("word_compatible"),
-                    "is_active": item.get("is_active"),
-                    "created_at": item.get("created_at"),
-                    "updated_at": item.get("updated_at"),
-                    "folder_name": folder.get("name"),
-                    "folder_color": folder.get("color"),
-                    "files_count": files_count,
-                    "last_action_type": last_action,
-                    "last_action_date": last_action_date
-                }
-                templates.append(template_data)
-                
+                    template_data = {
+                        "id": item.get("id"),
+                        "folder_id": item.get("folder_id"),
+                        "name": item.get("name"),
+                        "content": item.get("content"),
+                        "template_type": item.get("template_type"),
+                        "file_extension": item.get("file_extension"),
+                        "formatting_data": item.get("formatting_data"),
+                        "word_compatible": item.get("word_compatible"),
+                        "is_active": item.get("is_active"),
+                        "created_at": item.get("created_at"),
+                        "updated_at": item.get("updated_at"),
+                        "folder_name": folder.get("name") if folder else None,
+                        "folder_color": folder.get("color") if folder else None,
+                        "files_count": files_count,
+                        "last_action_type": last_action,
+                        "last_action_date": last_action_date
+                    }
+                    templates.append(template_data)
+                    
+                except Exception as e:
+                    logger.warning(f"Skipping corrupted template data for user {user_id}: {e}")
+                    continue
+            
             return templates
             
         except Exception as e:

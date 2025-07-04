@@ -934,7 +934,7 @@ def _save_updated_template_with_clauses(
         
         # Extract clauses from the updated template content
         content_json = None
-        extracted_clauses = []
+        # extracted_clauses = []
         
         try:
             from core.template_generator import TemplateGenerator
@@ -951,23 +951,21 @@ def _save_updated_template_with_clauses(
                 db_manager.update_job_step(job_id, "extract_clauses", "processing", 70)
                 
                 # Extract clauses used in the updated template
-                extracted_clauses = template_generator.extract_used_clauses(updated_content)
+                content_json = template_generator.add_drafting_notes(updated_content)
                 
-                if extracted_clauses and len(extracted_clauses) > 0:
-                    content_json = {
-                        "clauses": extracted_clauses,
-                        "extraction_metadata": {
-                            "extracted_at": datetime.utcnow().isoformat(),
-                            "total_clauses": len(extracted_clauses),
-                            "source_files": source_files,
-                            "last_updated": datetime.utcnow().isoformat(),
-                            "update_method": "template_update_celery",
-                            "updated_with_files": len(file_ids)
-                        }
-                    }
-                    logger.info(f"✅ Successfully extracted {len(extracted_clauses)} clauses for updated template")
-                else:
-                    logger.warning("❌ No clauses extracted from updated template content")
+                # if extracted_clauses and len(extracted_clauses) > 0:
+                #     content_json = {
+                #         "clauses": extracted_clauses,
+                #         "extraction_metadata": {
+                #             "extracted_at": datetime.utcnow().isoformat(),
+                #             "total_clauses": len(extracted_clauses),
+                #             "source_files": source_files,
+                #             "last_updated": datetime.utcnow().isoformat(),
+                #             "update_method": "template_update_celery",
+                #             "updated_with_files": len(file_ids)
+                #         }
+                #     }
+                logger.info(f"✅ Successfully added drafting notes to updated template")
             else:
                 logger.warning("API not configured for clause extraction, skipping content_json update")
                 
@@ -998,7 +996,7 @@ def _save_updated_template_with_clauses(
             "update_history": existing_formatting.get("update_history", []) + [{
                 "updated_at": datetime.utcnow().isoformat(),
                 "files_added": source_files,
-                "clauses_extracted": len(extracted_clauses) if extracted_clauses else 0
+                "drafting_notes_added": len(content_json) if content_json else 0
             }]
         }
         
@@ -1018,14 +1016,14 @@ def _save_updated_template_with_clauses(
                 "metadata": {
                     "updated_files": len(file_ids),
                     "update_method": "template_update_celery",
-                    "clauses_extracted": len(extracted_clauses) if extracted_clauses else 0
+                    "drafting_notes_added": len(content_json) if content_json else 0
                 }
             }
             client.table("template_usage_stats").insert(usage_data).execute()
         except Exception as e:
             logger.warning(f"Failed to track template usage: {e}")
         
-        logger.info(f"Template {template_id} updated successfully with {len(file_ids)} files and {len(extracted_clauses) if extracted_clauses else 0} clauses")
+        logger.info(f"Template {template_id} updated successfully with {len(file_ids)} files and {len(content_json) if content_json else 0} drafting notes")
         return template_id
     
     except Exception as e:
@@ -1234,10 +1232,10 @@ def _generate_template_content(
                 markdown_content = file_data["markdown_content"][0]["content"]
                 
                 # Limit content size
-                max_content_length = 50000
-                if len(markdown_content) > max_content_length:
-                    logger.warning(f"File {file_id} content too large ({len(markdown_content)} chars), truncating")
-                    markdown_content = markdown_content[:max_content_length] + "\n\n[Content truncated due to length]"
+                # max_content_length = 50000
+                # if len(markdown_content) > max_content_length:
+                #     logger.warning(f"File {file_id} content too large ({len(markdown_content)} chars), truncating")
+                #     markdown_content = markdown_content[:max_content_length] + "\n\n[Content truncated due to length]"
                 
                 processed_files.append({
                     'file_id': file_data['id'],
@@ -1289,7 +1287,7 @@ def _generate_template_content(
         # Add drafting notes
         db_manager.update_job_step(job_id, "generate_template", "processing", 80)
         final_template = template_generator.add_drafting_notes(
-            template_content, processed_files
+            template_content
         )
         
         logger.info(f"Template generation completed for job {job_id}")
@@ -1316,42 +1314,42 @@ def _save_template_to_database(
         source_files = [f["original_filename"] for f in files_response.data] if files_response.data else []
         
         # Extract clauses from the generated template content
-        content_json = None
-        extracted_clauses = []
+        content_json = template_content
+       # extracted_clauses = []
         
-        try:
-            from core.template_generator import TemplateGenerator
-            from core.api_config import APIConfiguration
+        # try:
+        #     from core.template_generator import TemplateGenerator
+        #     from core.api_config import APIConfiguration
             
-            api_config = APIConfiguration()
-            
-            if api_config.is_configured():
-                template_generator = TemplateGenerator(api_config)
+        #     api_config = APIConfiguration()
+        
+        #     if api_config.is_configured():
+        #         template_generator = TemplateGenerator(api_config)
                 
-                logger.info(f"Extracting clauses from template content (length: {len(template_content)} chars)")
+        #         logger.info(f"Extracting clauses from template content (length: {len(template_content)} chars)")
                 
-                # Extract clauses used in the template
-                extracted_clauses = template_generator.extract_used_clauses(template_content)
+        #         # Extract clauses used in the template
+        #         extracted_clauses = template_generator.extract_used_clauses(template_content)
                 
-                if extracted_clauses and len(extracted_clauses) > 0:
-                    content_json = {
-                        "clauses": extracted_clauses,
-                        "extraction_metadata": {
-                            "extracted_at": datetime.utcnow().isoformat(),
-                            "total_clauses": len(extracted_clauses),
-                            "source_files": source_files,
-                            "template_name": template_name,
-                            "extraction_method": "celery_background"
-                        }
-                    }
-                    logger.info(f"✅ Successfully extracted {len(extracted_clauses)} clauses for template content_json")
-                else:
-                    logger.warning("❌ No clauses extracted from template content")
-            else:
-                logger.warning("API not configured for clause extraction, skipping content_json population")
+        #         if extracted_clauses and len(extracted_clauses) > 0:
+        #             content_json = {
+        #                 "clauses": extracted_clauses,
+        #                 "extraction_metadata": {
+        #                     "extracted_at": datetime.utcnow().isoformat(),
+        #                     "total_clauses": len(extracted_clauses),
+        #                     "source_files": source_files,
+        #                     "template_name": template_name,
+        #                     "extraction_method": "celery_background"
+        #                 }
+        #             }
+        #             logger.info(f"✅ Successfully extracted {len(extracted_clauses)} clauses for template content_json")
+        #         else:
+        #             logger.warning("❌ No clauses extracted from template content")
+        #     else:
+        #         logger.warning("API not configured for clause extraction, skipping content_json population")
                 
-        except Exception as e:
-            logger.error(f"❌ Failed to extract clauses for content_json: {str(e)}", exc_info=True)
+        # except Exception as e:
+        #     logger.error(f"❌ Failed to extract clauses for content_json: {str(e)}", exc_info=True)
             # Continue without content_json
         
         # Save template to database
@@ -1365,8 +1363,7 @@ def _save_template_to_database(
                 "source_files": source_files,
                 "generation_date": datetime.utcnow().isoformat(),
                 "ai_generated": True,
-                "priority_file": priority_template_id,
-                "generation_method": "celery_background"
+                "priority_file": priority_template_id
             },
             "word_compatible": True,
             "is_active": True,
@@ -1393,16 +1390,14 @@ def _save_template_to_database(
                 "action_type": "generated",
                 "metadata": {
                     "source_files": len(file_ids),
-                    "generation_method": "celery_background",
-                    "folder_id": folder_id,
-                    "clauses_extracted": len(extracted_clauses) if extracted_clauses else 0
+                    "folder_id": folder_id
                 }
             }
             client.table("template_usage_stats").insert(usage_data).execute()
         except Exception as e:
             logger.warning(f"Failed to track template usage: {e}")
         
-        logger.info(f"Template {template_id} created successfully from {len(file_ids)} files with {len(extracted_clauses) if extracted_clauses else 0} clauses")
+        logger.info(f"Template {template_id} created successfully from {len(file_ids)} files with {len(content_json) if content_json else 0} drafting notes")
         return template_id
     
     except Exception as e:
