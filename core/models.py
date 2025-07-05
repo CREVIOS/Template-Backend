@@ -96,7 +96,7 @@ class Template(TemplateBase):
     updated_at: datetime
 
 class TemplateWithDetails(Template):
-    folder_name: str
+    folder_name: Optional[str] = None
     folder_color: Optional[str] = None
     files_count: int
     last_action_type: Optional[
@@ -112,7 +112,7 @@ class TemplatePreview(BaseModel):
     template_type: str
     file_extension: str
     formatting_data: Optional[Dict[str, Any]] = None
-    folder_name: str
+    folder_name: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -79,41 +79,45 @@ async def fetch_templates_from_db(
         # Process results
         templates = []
         for item in result.data:
-            folder = item.get("folders", {})
-            usage_stats = item.get("template_usage_stats", [])
+            try:
+                folder = item.get("folders") or {}  # Handle None case
+                usage_stats = item.get("template_usage_stats", [])
 
-            # Get most recent action
-            last_action = None
-            last_action_date = None
-            if usage_stats:
-                sorted_stats = sorted(usage_stats, key=lambda x: x.get("created_at", ""), reverse=True)
-                if sorted_stats:
-                    last_action = sorted_stats[0].get("action_type")
-                    last_action_date = sorted_stats[0].get("created_at")
+                # Get most recent action
+                last_action = None
+                last_action_date = None
+                if usage_stats:
+                    sorted_stats = sorted(usage_stats, key=lambda x: x.get("created_at", ""), reverse=True)
+                    if sorted_stats:
+                        last_action = sorted_stats[0].get("action_type")
+                        last_action_date = sorted_stats[0].get("created_at")
 
-            # Count files for this folder
-            files_response = await db.client.from_("files").select("*", count="exact").eq("folder_id", item.get("folder_id")).execute()
-            files_count = files_response.count or 0
+                # Count files for this folder
+                files_response = await db.client.from_("files").select("*", count="exact").eq("folder_id", item.get("folder_id")).execute()
+                files_count = files_response.count or 0
 
-            template_data = {
-                "id": item.get("id"),
-                "folder_id": item.get("folder_id"),
-                "name": item.get("name"),
-                "content": item.get("content"),
-                "template_type": item.get("template_type"),
-                "file_extension": item.get("file_extension"),
-                "formatting_data": item.get("formatting_data"),
-                "word_compatible": item.get("word_compatible"),
-                "is_active": item.get("is_active"),
-                "created_at": item.get("created_at"),
-                "updated_at": item.get("updated_at"),
-                "folder_name": folder.get("name"),
-                "folder_color": folder.get("color"),
-                "files_count": files_count,
-                "last_action_type": last_action,
-                "last_action_date": last_action_date
-            }
-            templates.append(template_data)
+                template_data = {
+                    "id": item.get("id"),
+                    "folder_id": item.get("folder_id"),
+                    "name": item.get("name"),
+                    "content": item.get("content"),
+                    "template_type": item.get("template_type"),
+                    "file_extension": item.get("file_extension"),
+                    "formatting_data": item.get("formatting_data"),
+                    "word_compatible": item.get("word_compatible"),
+                    "is_active": item.get("is_active"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "folder_name": folder.get("name"),
+                    "folder_color": folder.get("color"),
+                    "files_count": files_count,
+                    "last_action_type": last_action,
+                    "last_action_date": last_action_date
+                }
+                templates.append(template_data)
+            except Exception as e:
+                logger.warning(f"Skipping template {item.get('id', 'unknown')} due to data error: {str(e)}")
+                continue
         
         # Apply post-processing sorting
         if sort_field in ["last_action_type", "last_action_date", "files_count"]:
@@ -313,7 +317,7 @@ async def get_template_preview(
         await track_template_usage(template_id, user_id, "viewed")
 
         item = result.data
-        folder = item.get("folders", {})
+        folder = item.get("folders") or {}  # Handle None case
 
         # Handle content_json vs content properly
         content_json = item.get("content_json")
