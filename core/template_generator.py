@@ -496,7 +496,7 @@ You must return the response ONLY in JSON format following this exact structure:
                 "clause_type": "Payment Terms Clause",
                 "clause_title": "[Title of the Clause]",
                 "clause_text": "Full text of the main clause with all [Placeholders] intact...",
-                "drafting_note": "Detailed explanation of when and how to use this clause, its purpose, legal implications, and placement guidance...",
+                "drafting_note": "Detailed explanation of when and how to use this clause, its purpose, legal implications, and placement guidance of every clauses in this...",
                 "subclauses": [
                     {{
                         "subclause_number": "1.1",
