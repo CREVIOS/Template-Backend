@@ -7,8 +7,21 @@ from loguru import logger
 from datetime import datetime
 from core.api_config import APIConfiguration
 from enum import Enum  # Added missing import
+from functools import lru_cache
+from supabase import create_client, Client
 
 logger.add("logs/document_processor.log", rotation="100 MB", level="DEBUG", backtrace=True, diagnose=True)
+
+@lru_cache(maxsize=1)
+def get_supabase_client() -> Client:
+    """Get Supabase client for database operations"""
+    from core.database import DatabaseSettings
+    
+    settings = DatabaseSettings()
+    if not settings.supabase_url or not settings.supabase_service_key:
+        raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
+    
+    return create_client(settings.supabase_url, settings.supabase_service_key)
 
 class MetadataExtraction(BaseModel):
     contract_name: str
@@ -82,28 +95,36 @@ class DocumentProcessor:
         self.api_config = api_config
         self.logger = logger
     
-    def extract_metadata_from_text(self, text: str, filename: str) -> Dict[str, Any]:
-        """Extract contract metadata using AI"""
+    def extract_metadata_from_text(self, text: str, filename: str, file_id: str = None, folder_id: str = None, user_id: str = None) -> Dict[str, Any]:
+        """Extract contract metadata using AI and store in database if file_id is provided"""
         self.logger.info(f"Extracting metadata for {filename}")
         
         if not self.api_config.is_configured():
             self.logger.warning("API not configured, returning default metadata")
-            return {
+            default_metadata = {
                 "contract_name": filename,
                 "parties": ["Party A", "Party B"],
                 "date": None,
+                "summary": "",
                 "filename": filename
             }
+            
+            # Store default metadata if file_id is provided
+            if file_id and folder_id and user_id:
+                self._store_metadata_in_db(default_metadata, file_id, folder_id, user_id)
+                
+            return default_metadata
         
         try:
             prompt = f"""You are an expert legal document analyzer. Read the legal contract text and extract metadata. Return ONLY a JSON object with these exact fields:
 {{
     "contract_name": "name or title of the contract",
     "parties": ["Party 1", "Party 2"],
-    "date": "contract date (The date from when the contract is effective) in YYYY-MM-DD format if found, otherwise null"
+    "date": "contract date (The date from when the contract is effective) in YYYY-MM-DD format if found, otherwise null",
+    "summary": "provide a concise summary of the contract in 5-7 sentences only"
 }}
 
-Do not include any other text or explanation.
+IMPORTANT: Return ONLY the JSON object with the exact fields specified above. Use strict JSON formatting with proper quotes and brackets. Do not include any additional text, explanations, or markdown formatting.
 
 Contract text (first 2000 characters): {text[:2000]}"""
 
@@ -121,7 +142,7 @@ Contract text (first 2000 characters): {text[:2000]}"""
                     metadata = json.loads(response)
                     
                     # Validate required fields
-                    required_fields = ["contract_name", "parties", "date"]
+                    required_fields = ["contract_name", "parties", "date", "summary"]
                     for field in required_fields:
                         if field not in metadata:
                             self.logger.warning(f"Missing required field in metadata: {field}")
@@ -134,6 +155,11 @@ Contract text (first 2000 characters): {text[:2000]}"""
                     
                     self.logger.info(f"Successfully extracted metadata: {metadata}")
                     metadata["filename"] = filename
+                    
+                    # Store metadata in database if file_id is provided
+                    if file_id and folder_id and user_id:
+                        self._store_metadata_in_db(metadata, file_id, folder_id, user_id)
+                        
                     return metadata
                     
                 except json.JSONDecodeError as e:
@@ -145,6 +171,11 @@ Contract text (first 2000 characters): {text[:2000]}"""
                             metadata = json.loads(json_match.group())
                             self.logger.info("Successfully extracted JSON using regex fallback")
                             metadata["filename"] = filename
+                            
+                            # Store metadata in database if file_id is provided
+                            if file_id and folder_id and user_id:
+                                self._store_metadata_in_db(metadata, file_id, folder_id, user_id)
+                                
                             return metadata
                         except json.JSONDecodeError:
                             self.logger.error("Failed to parse JSON even with regex fallback")
@@ -155,28 +186,78 @@ Contract text (first 2000 characters): {text[:2000]}"""
                     
                 # If all parsing attempts fail, return default metadata
                 self.logger.warning("All metadata parsing attempts failed, returning default metadata")
-                return {
+                default_metadata = {
                     "contract_name": filename,
                     "parties": [],
                     "date": None,
-                    "filename": filename
-                }
-            else:
-                return {
-                    "contract_name": filename,
-                    "parties": [],
-                    "date": None,
+                    "summary": "",
                     "filename": filename
                 }
                 
+                # Store default metadata in database if file_id is provided
+                if file_id and folder_id and user_id:
+                    self._store_metadata_in_db(default_metadata, file_id, folder_id, user_id)
+                    
+                return default_metadata
+            else:
+                default_metadata = {
+                    "contract_name": filename,
+                    "parties": [],
+                    "date": None,
+                    "summary": "",
+                    "filename": filename
+                }
+                
+                # Store default metadata in database if file_id is provided
+                if file_id and folder_id and user_id:
+                    self._store_metadata_in_db(default_metadata, file_id, folder_id, user_id)
+                    
+                return default_metadata
+                
         except Exception as e:
             self.logger.error(f"Metadata extraction failed: {str(e)}", exc_info=True)
-            return {
+            default_metadata = {
                 "contract_name": filename,
                 "parties": [],
                 "date": None,
+                "summary": "",
                 "filename": filename
             }
+            
+            # Store default metadata in database if file_id is provided
+            if file_id and folder_id and user_id:
+                self._store_metadata_in_db(default_metadata, file_id, folder_id, user_id)
+                
+            return default_metadata
+    
+    def _store_metadata_in_db(self, metadata: Dict[str, Any], file_id: str, folder_id: str, user_id: str) -> bool:
+        """Store metadata in the file_info table in Supabase"""
+        try:
+            self.logger.info(f"Storing metadata in database for file_id: {file_id}")
+            
+            # Create or get Supabase client
+            supabase = get_supabase_client()
+            
+            # Prepare data for file_info table
+            file_info_data = {
+                "file_id": file_id,
+                "user_id": user_id,
+                "contract_infos": metadata
+            }
+            
+            # Insert or update in file_info table
+            result = supabase.table("file_info").upsert(file_info_data).execute()
+            
+            if result and hasattr(result, "data") and result.data:
+                self.logger.info(f"Successfully stored metadata in database for file_id: {file_id}")
+                return True
+            else:
+                self.logger.warning(f"No data returned when storing metadata for file_id: {file_id}")
+                return False
+                
+        except Exception as e:
+            self.logger.error(f"Failed to store metadata in database: {str(e)}", exc_info=True)
+            return False
     
     def extract_clauses_from_text(self, contract_text: str, metadata: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Extract comprehensive clauses from contract with detailed metadata"""
