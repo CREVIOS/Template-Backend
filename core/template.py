@@ -430,12 +430,12 @@ async def cache_health_check(
 # ============================================================================
 # TEMPLATE GENERATION
 # ============================================================================
-
 @router.post("/generate", response_model=ApiResponse)
 async def start_template_generation(
     user_id: str = Query(...),
     folder_id: str = Query(...),
     priority_template_id: str = Query(...),
+    template_name: Optional[str] = Query(None),  # ← ADD THIS PARAMETER
     db: DatabaseService = Depends(get_database_service)
 ):
     """Start template generation from files in a folder"""
@@ -502,19 +502,34 @@ async def start_template_generation(
                     }
                 )
 
-        # Generate template name
-        folder_name = folder_response.data[0].get('name', 'Template')
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        template_name = f"{folder_name}_Template_{timestamp}"
+        # Log the received template name for debugging
+        logger.info(f"   Template generation request:")
+        logger.info(f"   User ID: {user_id}")
+        logger.info(f"   Folder ID: {folder_id}")
+        logger.info(f"   Priority Template ID: {priority_template_id}")
+        logger.info(f"   Custom Template Name: {template_name}")  
         
-        # Create job record
+        # Determine final template name
+        if template_name and template_name.strip():
+            # Use the custom name provided by the user
+            final_template_name = template_name.strip()
+            logger.info(f"✅ Using custom template name: '{final_template_name}'")
+        else:
+            # Generate automatic name if no custom name provided
+            folder_name = folder_response.data[0].get('name', 'Template')
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+            final_template_name = f"{folder_name}_Template_{timestamp}"
+            logger.info(f"✅ Using auto-generated name: '{final_template_name}'")
+        
+        # Create job record with the final template name
         generation_job_id = await create_job(
             user_id=user_id,
             job_type="template_generation",
             metadata={
                 "folder_id": folder_id,
                 "priority_template_id": priority_template_id,
-                "template_name": template_name,
+                "template_name": final_template_name,  # ← USE FINAL NAME HERE
+                "custom_name_provided": bool(template_name and template_name.strip()),  # ← TRACK IF CUSTOM NAME WAS PROVIDED
                 "file_ids": [f["id"] for f in files_response.data],
                 "total_files": len(files_response.data)
             },
@@ -533,9 +548,11 @@ async def start_template_generation(
 
         return ApiResponse(
             success=True,
-            message="Template generation job created successfully",
+            message=f"Template generation job created successfully with name: '{final_template_name}'",  # ← INCLUDE NAME IN MESSAGE
             data={
                 "generation_job_id": generation_job_id,
+                "template_name": final_template_name,  # ← RETURN THE USED NAME
+                "custom_name_provided": bool(template_name and template_name.strip()),  # ← INDICATE IF CUSTOM NAME WAS USED
                 "status": "pending",
                 "files_ready": sum(1 for f in files_response.data if f["status"] == "processed"),
                 "files_need_processing": sum(1 for f in files_response.data if f["status"] != "processed"),
@@ -550,6 +567,8 @@ async def start_template_generation(
         logger.error(f"Error starting template generation: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error starting template generation: {str(e)}")
+
+
 
 @router.get("/generation/{generation_job_id}/status")
 async def get_generation_status(
