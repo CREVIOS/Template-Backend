@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from loguru import logger
 import json
+import asyncio
 
 from core.database import get_database_service, DatabaseService
 from core.redis_cache import get_cache_service, RedisCacheService
@@ -17,7 +18,7 @@ from core.models import (
     TemplatePreview,
     ApiResponse
 )
-from celery_tasks import template_generation_task
+from celery_tasks import template_generation_task, template_update_task
 from core.db_utilities import create_job, get_job_status as get_job_status_util
 
 logger.add("logs/template.log", rotation="10 MB", level="DEBUG")
@@ -79,41 +80,45 @@ async def fetch_templates_from_db(
         # Process results
         templates = []
         for item in result.data:
-            folder = item.get("folders", {})
-            usage_stats = item.get("template_usage_stats", [])
+            try:
+                folder = item.get("folders") or {}  # Handle None case
+                usage_stats = item.get("template_usage_stats", [])
 
-            # Get most recent action
-            last_action = None
-            last_action_date = None
-            if usage_stats:
-                sorted_stats = sorted(usage_stats, key=lambda x: x.get("created_at", ""), reverse=True)
-                if sorted_stats:
-                    last_action = sorted_stats[0].get("action_type")
-                    last_action_date = sorted_stats[0].get("created_at")
+                # Get most recent action
+                last_action = None
+                last_action_date = None
+                if usage_stats:
+                    sorted_stats = sorted(usage_stats, key=lambda x: x.get("created_at", ""), reverse=True)
+                    if sorted_stats:
+                        last_action = sorted_stats[0].get("action_type")
+                        last_action_date = sorted_stats[0].get("created_at")
 
-            # Count files for this folder
-            files_response = await db.client.from_("files").select("*", count="exact").eq("folder_id", item.get("folder_id")).execute()
-            files_count = files_response.count or 0
+                # Count files for this folder
+                files_response = await db.client.from_("files").select("*", count="exact").eq("folder_id", item.get("folder_id")).execute()
+                files_count = files_response.count or 0
 
-            template_data = {
-                "id": item.get("id"),
-                "folder_id": item.get("folder_id"),
-                "name": item.get("name"),
-                "content": item.get("content"),
-                "template_type": item.get("template_type"),
-                "file_extension": item.get("file_extension"),
-                "formatting_data": item.get("formatting_data"),
-                "word_compatible": item.get("word_compatible"),
-                "is_active": item.get("is_active"),
-                "created_at": item.get("created_at"),
-                "updated_at": item.get("updated_at"),
-                "folder_name": folder.get("name"),
-                "folder_color": folder.get("color"),
-                "files_count": files_count,
-                "last_action_type": last_action,
-                "last_action_date": last_action_date
-            }
-            templates.append(template_data)
+                template_data = {
+                    "id": item.get("id"),
+                    "folder_id": item.get("folder_id"),
+                    "name": item.get("name"),
+                    "content": item.get("content"),
+                    "template_type": item.get("template_type"),
+                    "file_extension": item.get("file_extension"),
+                    "formatting_data": item.get("formatting_data"),
+                    "word_compatible": item.get("word_compatible"),
+                    "is_active": item.get("is_active"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "folder_name": folder.get("name"),
+                    "folder_color": folder.get("color"),
+                    "files_count": files_count,
+                    "last_action_type": last_action,
+                    "last_action_date": last_action_date
+                }
+                templates.append(template_data)
+            except Exception as e:
+                logger.warning(f"Skipping template {item.get('id', 'unknown')} due to data error: {str(e)}")
+                continue
         
         # Apply post-processing sorting
         if sort_field in ["last_action_type", "last_action_date", "files_count"]:
@@ -313,7 +318,7 @@ async def get_template_preview(
         await track_template_usage(template_id, user_id, "viewed")
 
         item = result.data
-        folder = item.get("folders", {})
+        folder = item.get("folders") or {}  # Handle None case
 
         # Handle content_json vs content properly
         content_json = item.get("content_json")
@@ -426,12 +431,12 @@ async def cache_health_check(
 # ============================================================================
 # TEMPLATE GENERATION
 # ============================================================================
-
 @router.post("/generate", response_model=ApiResponse)
 async def start_template_generation(
     user_id: str = Query(...),
     folder_id: str = Query(...),
     priority_template_id: str = Query(...),
+    template_name: Optional[str] = Query(None),  # ← ADD THIS PARAMETER
     db: DatabaseService = Depends(get_database_service)
 ):
     """Start template generation from files in a folder"""
@@ -498,19 +503,34 @@ async def start_template_generation(
                     }
                 )
 
-        # Generate template name
-        folder_name = folder_response.data[0].get('name', 'Template')
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
-        template_name = f"{folder_name}_Template_{timestamp}"
+        # Log the received template name for debugging
+        logger.info(f"   Template generation request:")
+        logger.info(f"   User ID: {user_id}")
+        logger.info(f"   Folder ID: {folder_id}")
+        logger.info(f"   Priority Template ID: {priority_template_id}")
+        logger.info(f"   Custom Template Name: {template_name}")  
         
-        # Create job record
+        # Determine final template name
+        if template_name and template_name.strip():
+            # Use the custom name provided by the user
+            final_template_name = template_name.strip()
+            logger.info(f"✅ Using custom template name: '{final_template_name}'")
+        else:
+            # Generate automatic name if no custom name provided
+            folder_name = folder_response.data[0].get('name', 'Template')
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M')
+            final_template_name = f"{folder_name}_Template_{timestamp}"
+            logger.info(f"✅ Using auto-generated name: '{final_template_name}'")
+        
+        # Create job record with the final template name
         generation_job_id = await create_job(
             user_id=user_id,
             job_type="template_generation",
             metadata={
                 "folder_id": folder_id,
                 "priority_template_id": priority_template_id,
-                "template_name": template_name,
+                "template_name": final_template_name,  # ← USE FINAL NAME HERE
+                "custom_name_provided": bool(template_name and template_name.strip()),  # ← TRACK IF CUSTOM NAME WAS PROVIDED
                 "file_ids": [f["id"] for f in files_response.data],
                 "total_files": len(files_response.data)
             },
@@ -529,9 +549,11 @@ async def start_template_generation(
 
         return ApiResponse(
             success=True,
-            message="Template generation job created successfully",
+            message=f"Template generation job created successfully with name: '{final_template_name}'",  # ← INCLUDE NAME IN MESSAGE
             data={
                 "generation_job_id": generation_job_id,
+                "template_name": final_template_name,  # ← RETURN THE USED NAME
+                "custom_name_provided": bool(template_name and template_name.strip()),  # ← INDICATE IF CUSTOM NAME WAS USED
                 "status": "pending",
                 "files_ready": sum(1 for f in files_response.data if f["status"] == "processed"),
                 "files_need_processing": sum(1 for f in files_response.data if f["status"] != "processed"),
@@ -546,6 +568,30 @@ async def start_template_generation(
         logger.error(f"Error starting template generation: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Error starting template generation: {str(e)}")
+
+
+@router.get("/folder/{folder_id}/clauses")
+async def get_folder_clauses(
+    folder_id: str,
+    user_id: str = Query(...),
+    db: DatabaseService = Depends(get_database_service),
+    cache: RedisCacheService = Depends(get_cache_service)
+):
+    """
+    Get all clauses from clause_library for a folder, with Redis caching.
+    """
+    cache_key = f"clause_library:folder:{folder_id}:user:{user_id}"
+    # Try cache first
+    cached = await asyncio.to_thread(cache.client.get, cache_key)
+    if cached:
+        return {"clauses": json.loads(cached)}
+    # Fetch from DB
+    clauses_result = await db.client.from_("clause_library").select("*").eq("user_id", user_id).eq("folder_id", folder_id).order("clause_type").execute()
+    clauses = clauses_result.data or []
+    # Cache result
+    await asyncio.to_thread(cache.client.setex, cache_key, 300, json.dumps(clauses))  # 5 min TTL
+    return {"clauses": clauses}
+
 
 @router.get("/generation/{generation_job_id}/status")
 async def get_generation_status(
@@ -1134,9 +1180,183 @@ async def cleanup_stuck_jobs(
         logger.error(f"Error during manual job cleanup: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error during job cleanup: {str(e)}")
 
+
+
+
 # ============================================================================
-# HELPER FUNCTIONS
+# Template Update
 # ============================================================================
+@router.post("/update", response_model=ApiResponse)
+async def update_template_with_files(
+    template_id: str = Query(...),
+    user_id: str = Query(...),
+    file_ids: List[str] = Query(..., description="List of file IDs to update template with"),
+    db: DatabaseService = Depends(get_database_service)
+):
+    """Update existing template with new files"""
+    try:
+        logger.info(f"🔄 Starting template update: {template_id} with {len(file_ids)} files")
+        
+        # Verify template exists and user has access
+        template_response = await db.client.from_("templates").select(
+            "*, folders(user_id, name)"
+        ).eq("id", template_id).single().execute()
+        
+        if not template_response.data:
+            raise HTTPException(status_code=404, detail="Template not found")
+        
+        template_data = template_response.data
+        folder = template_data.get("folders", {})
+        
+        if folder.get("user_id") != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        # Verify all files exist and belong to user
+        files_response = await db.client.from_("files").select(
+            "id, original_filename, status, folder_id, user_id"
+        ).in_("id", file_ids).eq("user_id", user_id).execute()
+        
+        if not files_response.data or len(files_response.data) != len(file_ids):
+            raise HTTPException(status_code=400, detail="Some files not found or access denied")
+        
+        # Check file status for information (but don't reject unprocessed files)
+        unprocessed_files = [f for f in files_response.data if f["status"] not in ["processed", "clauses_ready"]]
+        processed_files = [f for f in files_response.data if f["status"] in ["processed", "clauses_ready"]]
+        
+        logger.info(f"Template update: {len(processed_files)} files ready, {len(unprocessed_files)} files need processing")
+        
+        # Check for existing active update jobs for this template
+        existing_jobs = await db.client.from_("jobs").select(
+            "id, status, metadata, celery_task_id"
+        ).eq("user_id", user_id).eq("job_type", "template_update").in_(
+            "status", ["pending", "processing"]
+        ).execute()
+        
+        if existing_jobs.data:
+            for job in existing_jobs.data:
+                job_metadata = job.get("metadata", {})
+                if job_metadata.get("template_id") == template_id:
+                    logger.info(f"Found existing active update job {job['id']} for template {template_id}")
+                    return ApiResponse(
+                        success=True,
+                        message="Template update already in progress",
+                        data={
+                            "update_job_id": job["id"],
+                            "status": job["status"],
+                            "existing_job": True
+                        }
+                    )
+        
+        # Create job record
+        update_job_id = await create_job(
+            user_id=user_id,
+            job_type="template_update",
+            metadata={
+                "template_id": template_id,
+                "template_name": template_data.get("name"),
+                "file_ids": file_ids,
+                "total_files": len(file_ids),
+                "folder_id": template_data.get("folder_id")
+            },
+            total_steps=3
+        )
+        
+        # Start Celery task
+        task_result = template_update_task.delay(update_job_id)
+        
+        # Update job with Celery task ID
+        await db.client.from_("jobs").update({
+            "celery_task_id": task_result.id,
+            "status": "processing",
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", update_job_id).execute()
+        
+        return ApiResponse(
+            success=True,
+            message="Template update job created successfully",
+            data={
+                "update_job_id": update_job_id,
+                "status": "pending",
+                "template_id": template_id,
+                "files_count": len(file_ids),
+                "files_ready": len(processed_files),
+                "files_need_processing": len(unprocessed_files),
+                "estimated_duration": "2-3 minutes" if len(unprocessed_files) == 0 else "3-5 minutes"
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error starting template update: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Error starting template update: {str(e)}")
+
+@router.get("/update/{update_job_id}/status")
+async def get_update_status(
+    update_job_id: str,
+    user_id: str = Query(...),
+    db: DatabaseService = Depends(get_database_service)
+):
+    """Get the status of a template update job"""
+    try:
+        job_status = await get_job_status_util(update_job_id)
+        
+        if "error" in job_status:
+            return {
+                "update_job_id": update_job_id,
+                "status": "error",
+                "progress": 0,
+                "message": job_status.get("error", "Unknown error"),
+                "estimated_completion": ""
+            }
+        
+        # Extract metadata
+        metadata = job_status.get("metadata", {})
+        template_name = metadata.get("template_name", "Unknown Template")
+        
+        # Generate status message
+        status = job_status.get("status", "pending")
+        current_step_name = job_status.get("current_step_name", "")
+        
+        if status == "completed":
+            message = f"Template '{template_name}' updated successfully"
+        elif status == "failed":
+            message = job_status.get("error_message", "Template update failed")
+        elif current_step_name == "process_files":
+            message = "Ensuring files are ready for update..."
+        elif current_step_name == "update_template":
+            message = f"Updating template '{template_name}' with AI..."
+        elif current_step_name == "extract_clauses":
+            message = "Extracting clauses from updated template..."
+        else:
+            message = "Preparing template update..."
+        
+        # Estimate completion
+        estimated_completion = ""
+        if status == "processing":
+            progress = job_status.get("progress", 0)
+            if progress < 50:
+                estimated_completion = "2-3 minutes"
+            elif progress < 80:
+                estimated_completion = "1-2 minutes"
+            else:
+                estimated_completion = "Less than 1 minute"
+        
+        return {
+            "update_job_id": update_job_id,
+            "status": status,
+            "progress": job_status.get("progress", 0),
+            "message": message,
+            "template_name": template_name,
+            "estimated_completion": estimated_completion
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting update status: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500, detail=f"Error getting update status: {str(e)}")
+
 
 async def track_template_usage(
     template_id: str,

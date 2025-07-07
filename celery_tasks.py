@@ -16,8 +16,9 @@ from supabase import create_client, Client
 
 # Configuration
 MISTRAL_API_KEY = os.environ.get('MISTRAL_API_KEY', 'jhJDPTCJ5ZsDd9lez0jxMQRBs5Qc1UKH')
-SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://knqkunivquuuvnfwrqrn.supabase.co')
-SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtucWt1bml2cXV1dXZuZndycXJuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0OTY5NjY2NSwiZXhwIjoyMDY1MjcyNjY1fQ.axhQBEv4lAnxmqkIDIKT8O72QwX6ypFk04do5eAPKdw')
+SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://dpaovmacocyatazsnvtx.supabase.co')
+SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRwYW92bWFjb2N5YXRhenNudnR4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM4NTcwMywiZXhwIjoyMDY2OTYxNzAzfQ.3_fKrWMMPCu83pHD-oxZmAyi_pemW6bJdUUuc_-Hg80')
+
 
 # Path configuration
 sys.path.insert(0, os.path.dirname(__file__))
@@ -733,6 +734,302 @@ def extract_clauses_task(self, file_id: str, job_id: Optional[str] = None):
         
         raise RuntimeError(f"Clause extraction failed after {self.max_retries} retries: {str(e)}") from e
 
+
+
+# ============================================================================
+# TEMPLATE UPDATE TASK
+# ============================================================================
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=60)
+def template_update_task(self, job_id: str):
+    """Celery task to handle template updates with new files"""
+    if not job_id:
+        raise ValueError("job_id is required")
+    
+    try:
+        logger.info(f"Starting template update Celery task for job: {job_id}")
+        
+        # Get job details
+        job_status = db_manager.get_job_status(job_id)
+        if "error" in job_status:
+            raise ValueError(f"Job {job_id} not found")
+        
+        metadata = job_status["metadata"]
+        user_id = job_status.get("user_id")
+        template_id = metadata["template_id"]
+        template_name = metadata["template_name"]
+        file_ids = metadata["file_ids"]
+        
+        # Update job with Celery task ID
+        db_manager.update_job_with_task_id(job_id, self.request.id)
+        
+        # Step 1: Ensure files are processed
+        db_manager.update_job_step(job_id, "process_files", "processing", 10)
+        _ensure_files_processed(file_ids, job_id)
+        
+        processed_count = _wait_for_files_processed(file_ids, job_id, max_wait_minutes=10)
+        db_manager.update_job_step(job_id, "process_files", "completed", 100, metadata={
+            "processed_files": processed_count,
+            "total_files": len(file_ids)
+        })
+        
+        # Step 2: Update template with new files
+        db_manager.update_job_step(job_id, "update_template", "processing", 20)
+        updated_template_content = _update_template_with_files(
+            template_id, file_ids, job_id
+        )
+        db_manager.update_job_step(job_id, "update_template", "completed", 100, metadata={
+            "updated_template_length": len(updated_template_content)
+        })
+        
+        # Step 3: Extract clauses and save updated template
+        db_manager.update_job_step(job_id, "extract_clauses", "processing", 50)
+        final_template_id = _save_updated_template_with_clauses(
+            template_id, updated_template_content, file_ids, job_id
+        )
+        db_manager.update_job_step(job_id, "extract_clauses", "completed", 100, metadata={
+            "final_template_id": final_template_id
+        })
+        
+        # Update job result
+        get_supabase_client().table("jobs").update({
+            "result": {
+                "template_id": final_template_id,
+                "template_name": template_name,
+                "updated_files": processed_count,
+                "action": "template_updated"
+            },
+            "status": "completed",
+            "completed_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }).eq("id", job_id).execute()
+        
+        # Invalidate cache for the user since template was updated
+        try:
+            from core.redis_cache import invalidate_user_cache_sync
+            cache_invalidated = invalidate_user_cache_sync(user_id)
+            if cache_invalidated:
+                logger.info(f"✅ Cache invalidated for user {user_id} after template update")
+            else:
+                logger.warning(f"⚠️  Cache invalidation failed for user {user_id}")
+        except Exception as cache_error:
+            logger.error(f"❌ Error invalidating cache for user {user_id}: {cache_error}")
+        
+        logger.info(f"Template update task {job_id} completed successfully")
+        
+        return {
+            "job_id": job_id,
+            "template_id": final_template_id,
+            "status": "completed",
+            "updated_files": processed_count
+        }
+        
+    except ValueError as e:
+        logger.error(f"❌ Validation error in template update for {job_id}: {str(e)}")
+        raise
+        
+    except Exception as e:
+        logger.error(f"Template update task {job_id} failed: {str(e)}")
+        
+        # Update job status
+        try:
+            current_step_name = job_status.get("current_step_name", "unknown")
+            db_manager.update_job_step(job_id, current_step_name, "failed", 0, str(e))
+        except:
+            pass
+        
+        # Retry logic
+        if self.request.retries < self.max_retries:
+            logger.info(f"Retrying template update for job: {job_id}")
+            raise self.retry(countdown=60, exc=e)
+        
+        raise
+
+def _update_template_with_files(template_id: str, file_ids: List[str], job_id: str) -> str:
+    """Update template content with new files using AI"""
+    try:
+        logger.info(f"Updating template {template_id} with {len(file_ids)} files")
+        
+        # Get existing template
+        template_response = get_supabase_client().table("templates").select(
+            "id, name, content, content_json"
+        ).eq("id", template_id).single().execute()
+        
+        if not template_response.data:
+            raise RuntimeError(f"Template {template_id} not found")
+        
+        template_data = template_response.data
+        existing_content = template_data.get("content", "")
+        
+        if not existing_content:
+            raise RuntimeError("Template has no content to update")
+        
+        # Get processed files with markdown content
+        processed_files = []
+        for file_id in file_ids:
+            file_response = get_supabase_client().table("files").select(
+                "*, markdown_content(content)"
+            ).eq("id", file_id).eq("status", "processed").execute()
+            
+            if file_response.data and file_response.data[0].get("markdown_content"):
+                file_data = file_response.data[0]
+                markdown_content = file_data["markdown_content"][0]["content"]
+                
+                # Limit content size to prevent API limits
+                # max_content_length = 50000
+                # if len(markdown_content) > max_content_length:
+                #     logger.warning(f"File {file_id} content too large ({len(markdown_content)} chars), truncating")
+                #     markdown_content = markdown_content[:max_content_length] + "\n\n[Content truncated due to length]"
+                
+                processed_files.append({
+                    'file_id': file_data['id'],
+                    'filename': file_data['original_filename'],
+                    'extracted_text': markdown_content,
+                    'metadata': file_data.get('extracted_metadata', {}),
+                })
+        
+        if not processed_files:
+            raise RuntimeError("No processed files with content found for update")
+        
+        # Use TemplateGenerator to update template
+        from core.api_config import APIConfiguration
+        from core.template_generator import TemplateGenerator
+        
+        api_config = APIConfiguration()
+        template_generator = TemplateGenerator(api_config)
+        
+        # Update template with each file
+        updated_content = existing_content
+        
+        for i, file_data in enumerate(processed_files):
+            logger.info(f"Updating template with file {i+1}/{len(processed_files)}: {file_data['filename']}")
+            
+            # Update progress
+            progress = 20 + (i * 60 // len(processed_files))
+            db_manager.update_job_step(job_id, "update_template", "processing", progress)
+            
+            updated_content = template_generator.update_template_new_files(
+                updated_content, file_data['extracted_text']
+            )
+        
+        logger.info(f"Template update completed. New content length: {len(updated_content)}")
+        return updated_content
+        
+    except Exception as e:
+        logger.error(f"Template update failed: {str(e)}")
+        raise RuntimeError(f"AI template update failed: {str(e)}") from e
+
+def _save_updated_template_with_clauses(
+    template_id: str, 
+    updated_content: str, 
+    file_ids: List[str], 
+    job_id: str
+) -> str:
+    """Save updated template and extract clauses for content_json"""
+    try:
+        client = get_supabase_client()
+        
+        # Get source filenames
+        files_response = client.table("files").select("original_filename").in_("id", file_ids).execute()
+        source_files = [f["original_filename"] for f in files_response.data] if files_response.data else []
+        
+        # Extract clauses from the updated template content
+        content_json = None
+        # extracted_clauses = []
+        
+        try:
+            from core.template_generator import TemplateGenerator
+            from core.api_config import APIConfiguration
+            
+            api_config = APIConfiguration()
+            
+            if api_config.is_configured():
+                template_generator = TemplateGenerator(api_config)
+                
+                logger.info(f"Extracting clauses from updated template (length: {len(updated_content)} chars)")
+                
+                # Update progress
+                db_manager.update_job_step(job_id, "extract_clauses", "processing", 70)
+                
+                # Extract clauses used in the updated template
+                content_json = template_generator.add_drafting_notes(updated_content)
+                
+                # if extracted_clauses and len(extracted_clauses) > 0:
+                #     content_json = {
+                #         "clauses": extracted_clauses,
+                #         "extraction_metadata": {
+                #             "extracted_at": datetime.utcnow().isoformat(),
+                #             "total_clauses": len(extracted_clauses),
+                #             "source_files": source_files,
+                #             "last_updated": datetime.utcnow().isoformat(),
+                #             "update_method": "template_update_celery",
+                #             "updated_with_files": len(file_ids)
+                #         }
+                #     }
+                logger.info(f"✅ Successfully added drafting notes to updated template")
+            else:
+                logger.warning("API not configured for clause extraction, skipping content_json update")
+                
+        except Exception as e:
+            logger.error(f"❌ Failed to extract clauses for updated template: {str(e)}", exc_info=True)
+            # Continue without updating content_json
+        
+        # Prepare update data
+        update_data = {
+            "content": updated_content,
+            "updated_at": datetime.utcnow().isoformat()
+        }
+        
+        # Add content_json if clauses were extracted
+        if content_json:
+            update_data["content_json"] = content_json
+        
+        # Update formatting_data to track the update
+        formatting_data_response = client.table("templates").select("formatting_data").eq("id", template_id).single().execute()
+        existing_formatting = formatting_data_response.data.get("formatting_data", {}) if formatting_data_response.data else {}
+        
+        # Update formatting data
+        updated_formatting = {
+            **existing_formatting,
+            "last_updated": datetime.utcnow().isoformat(),
+            "update_method": "template_update_celery",
+            "updated_with_files": source_files,
+            "update_history": existing_formatting.get("update_history", []) + [{
+                "updated_at": datetime.utcnow().isoformat(),
+                "files_added": source_files,
+                "drafting_notes_added": len(content_json) if content_json else 0
+            }]
+        }
+        
+        update_data["formatting_data"] = updated_formatting
+        
+        # Save updated template
+        template_result = client.table("templates").update(update_data).eq("id", template_id).execute()
+        
+        if not template_result.data:
+            raise RuntimeError("Failed to save updated template to database")
+        
+        # Track template usage
+        try:
+            usage_data = {
+                "template_id": template_id,
+                "action_type": "updated",
+                "metadata": {
+                    "updated_files": len(file_ids),
+                    "update_method": "template_update_celery",
+                    "drafting_notes_added": len(content_json) if content_json else 0
+                }
+            }
+            client.table("template_usage_stats").insert(usage_data).execute()
+        except Exception as e:
+            logger.warning(f"Failed to track template usage: {e}")
+        
+        logger.info(f"Template {template_id} updated successfully with {len(file_ids)} files and {len(content_json) if content_json else 0} drafting notes")
+        return template_id
+    
+    except Exception as e:
+        logger.error(f"Failed to save updated template: {e}")
+        raise RuntimeError(f"Failed to save updated template: {str(e)}") from e
 # ============================================================================
 # TEMPLATE GENERATION TASK
 # ============================================================================
@@ -936,10 +1233,10 @@ def _generate_template_content(
                 markdown_content = file_data["markdown_content"][0]["content"]
                 
                 # Limit content size
-                max_content_length = 50000
-                if len(markdown_content) > max_content_length:
-                    logger.warning(f"File {file_id} content too large ({len(markdown_content)} chars), truncating")
-                    markdown_content = markdown_content[:max_content_length] + "\n\n[Content truncated due to length]"
+                # max_content_length = 50000
+                # if len(markdown_content) > max_content_length:
+                #     logger.warning(f"File {file_id} content too large ({len(markdown_content)} chars), truncating")
+                #     markdown_content = markdown_content[:max_content_length] + "\n\n[Content truncated due to length]"
                 
                 processed_files.append({
                     'file_id': file_data['id'],
@@ -991,7 +1288,7 @@ def _generate_template_content(
         # Add drafting notes
         db_manager.update_job_step(job_id, "generate_template", "processing", 80)
         final_template = template_generator.add_drafting_notes(
-            template_content, processed_files
+            template_content
         )
         
         logger.info(f"Template generation completed for job {job_id}")
@@ -1018,42 +1315,42 @@ def _save_template_to_database(
         source_files = [f["original_filename"] for f in files_response.data] if files_response.data else []
         
         # Extract clauses from the generated template content
-        content_json = None
-        extracted_clauses = []
+        content_json = template_content
+       # extracted_clauses = []
         
-        try:
-            from core.template_generator import TemplateGenerator
-            from core.api_config import APIConfiguration
+        # try:
+        #     from core.template_generator import TemplateGenerator
+        #     from core.api_config import APIConfiguration
             
-            api_config = APIConfiguration()
-            
-            if api_config.is_configured():
-                template_generator = TemplateGenerator(api_config)
+        #     api_config = APIConfiguration()
+        
+        #     if api_config.is_configured():
+        #         template_generator = TemplateGenerator(api_config)
                 
-                logger.info(f"Extracting clauses from template content (length: {len(template_content)} chars)")
+        #         logger.info(f"Extracting clauses from template content (length: {len(template_content)} chars)")
                 
-                # Extract clauses used in the template
-                extracted_clauses = template_generator.extract_used_clauses(template_content)
+        #         # Extract clauses used in the template
+        #         extracted_clauses = template_generator.extract_used_clauses(template_content)
                 
-                if extracted_clauses and len(extracted_clauses) > 0:
-                    content_json = {
-                        "clauses": extracted_clauses,
-                        "extraction_metadata": {
-                            "extracted_at": datetime.utcnow().isoformat(),
-                            "total_clauses": len(extracted_clauses),
-                            "source_files": source_files,
-                            "template_name": template_name,
-                            "extraction_method": "celery_background"
-                        }
-                    }
-                    logger.info(f"✅ Successfully extracted {len(extracted_clauses)} clauses for template content_json")
-                else:
-                    logger.warning("❌ No clauses extracted from template content")
-            else:
-                logger.warning("API not configured for clause extraction, skipping content_json population")
+        #         if extracted_clauses and len(extracted_clauses) > 0:
+        #             content_json = {
+        #                 "clauses": extracted_clauses,
+        #                 "extraction_metadata": {
+        #                     "extracted_at": datetime.utcnow().isoformat(),
+        #                     "total_clauses": len(extracted_clauses),
+        #                     "source_files": source_files,
+        #                     "template_name": template_name,
+        #                     "extraction_method": "celery_background"
+        #                 }
+        #             }
+        #             logger.info(f"✅ Successfully extracted {len(extracted_clauses)} clauses for template content_json")
+        #         else:
+        #             logger.warning("❌ No clauses extracted from template content")
+        #     else:
+        #         logger.warning("API not configured for clause extraction, skipping content_json population")
                 
-        except Exception as e:
-            logger.error(f"❌ Failed to extract clauses for content_json: {str(e)}", exc_info=True)
+        # except Exception as e:
+        #     logger.error(f"❌ Failed to extract clauses for content_json: {str(e)}", exc_info=True)
             # Continue without content_json
         
         # Save template to database
@@ -1067,8 +1364,7 @@ def _save_template_to_database(
                 "source_files": source_files,
                 "generation_date": datetime.utcnow().isoformat(),
                 "ai_generated": True,
-                "priority_file": priority_template_id,
-                "generation_method": "celery_background"
+                "priority_file": priority_template_id
             },
             "word_compatible": True,
             "is_active": True,
@@ -1095,16 +1391,14 @@ def _save_template_to_database(
                 "action_type": "generated",
                 "metadata": {
                     "source_files": len(file_ids),
-                    "generation_method": "celery_background",
-                    "folder_id": folder_id,
-                    "clauses_extracted": len(extracted_clauses) if extracted_clauses else 0
+                    "folder_id": folder_id
                 }
             }
             client.table("template_usage_stats").insert(usage_data).execute()
         except Exception as e:
             logger.warning(f"Failed to track template usage: {e}")
         
-        logger.info(f"Template {template_id} created successfully from {len(file_ids)} files with {len(extracted_clauses) if extracted_clauses else 0} clauses")
+        logger.info(f"Template {template_id} created successfully from {len(file_ids)} files with {len(content_json) if content_json else 0} drafting notes")
         return template_id
     
     except Exception as e:
