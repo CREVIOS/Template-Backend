@@ -4,12 +4,13 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime, timedelta
 from loguru import logger
 import json
+import asyncio
 
 from core.database import get_database_service, DatabaseService
 from core.redis_cache import get_cache_service, RedisCacheService
 from core.api_config import APIConfiguration
 # from core.template_generator import TemplateGenerator
-from core.document_exporter import DocumentExporter
+from core.document_exporter import DocumentExporter, ExportStyleConfig
 from core.models import (
     TemplatesResponse,
     TemplatePreviewResponse,
@@ -569,6 +570,28 @@ async def start_template_generation(
             status_code=500, detail=f"Error starting template generation: {str(e)}")
 
 
+# @router.get("/folder/{folder_id}/clauses")
+# async def get_folder_clauses(
+#     folder_id: str,
+#     user_id: str = Query(...),
+#     db: DatabaseService = Depends(get_database_service),
+#     cache: RedisCacheService = Depends(get_cache_service)
+# ):
+#     """
+#     Get all clauses from clause_library for a folder, with Redis caching.
+#     """
+#     cache_key = f"clause_library:folder:{folder_id}:user:{user_id}"
+#     # Try cache first
+#     cached = await asyncio.to_thread(cache.client.get, cache_key)
+#     if cached:
+#         return {"clauses": json.loads(cached)}
+#     # Fetch from DB
+#     clauses_result = await db.client.from_("clause_library").select("*").eq("user_id", user_id).eq("folder_id", folder_id).order("clause_type").execute()
+#     clauses = clauses_result.data or []
+#     # Cache result
+#     await asyncio.to_thread(cache.client.setex, cache_key, 300, json.dumps(clauses))  # 5 min TTL
+#     return {"clauses": clauses}
+
 
 @router.get("/generation/{generation_job_id}/status")
 async def get_generation_status(
@@ -827,7 +850,14 @@ async def export_template(
             
         elif format == 'docx':
             try:
-                docx_content = exporter.generate_docx(template_data['content'])
+                
+                
+                exporter = DocumentExporter()
+                cfg = ExportStyleConfig(
+                    numbering_style='numeric',          # or 'roman', 'numeric'
+                    drafting_note_as_comment=True,    # comments instead of inline notes
+                )
+                docx_content = exporter.export_json_to_docx(template_data['content'], cfg)
                 return Response(
                     content=docx_content,
                     media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1019,40 +1049,40 @@ async def get_folder_files(
         logger.error(f"Error fetching folder files: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching folder files: {str(e)}")
 
-@router.get("/file/{file_id}/info")
-async def get_file_info(
-    file_id: str,
-    user_id: str = Query(...),
-    db: DatabaseService = Depends(get_database_service)
-):
-    """Get file_info data for a specific file"""
-    try:
-        # Verify file access
-        file_response = await db.client.from_("files").select(
-            "id, original_filename, user_id"
-        ).eq("id", file_id).eq("user_id", user_id).single().execute()
+# @router.get("/file/{file_id}/info")
+# async def get_file_info(
+#     file_id: str,
+#     user_id: str = Query(...),
+#     db: DatabaseService = Depends(get_database_service)
+# ):
+#     """Get file_info data for a specific file"""
+#     try:
+#         # Verify file access
+#         file_response = await db.client.from_("files").select(
+#             "id, original_filename, user_id"
+#         ).eq("id", file_id).eq("user_id", user_id).single().execute()
         
-        if not file_response.data:
-            raise HTTPException(status_code=404, detail="File not found")
+#         if not file_response.data:
+#             raise HTTPException(status_code=404, detail="File not found")
         
-        # Get file_info
-        file_info_response = await db.client.from_("file_info").select(
-            "*"
-        ).eq("file_id", file_id).eq("user_id", user_id).execute()
+#         # Get file_info
+#         file_info_response = await db.client.from_("file_info").select(
+#             "*"
+#         ).eq("file_id", file_id).eq("user_id", user_id).execute()
         
-        file_info = file_info_response.data or []
+#         file_info = file_info_response.data or []
         
-        return {
-            "file_id": file_id,
-            "file_name": file_response.data.get("original_filename"),
-            "file_info": file_info
-        }
+#         return {
+#             "file_id": file_id,
+#             "file_name": file_response.data.get("original_filename"),
+#             "file_info": file_info
+#         }
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error fetching file info: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Error fetching file info: {str(e)}")
+#     except HTTPException:
+#         raise
+#     except Exception as e:
+#         logger.error(f"Error fetching file info: {str(e)}", exc_info=True)
+#         raise HTTPException(status_code=500, detail=f"Error fetching file info: {str(e)}")
 
 # ============================================================================
 # UTILITY ENDPOINTS

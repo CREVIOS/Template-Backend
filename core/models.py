@@ -103,6 +103,13 @@ class TemplateWithDetails(Template):
         Literal['viewed', 'downloaded', 'edited', 'generated', 'exported']
     ] = None
     last_action_date: Optional[datetime] = None
+    # NEW SHARING FIELDS
+    is_shared: bool = False
+    access_level: Optional[Literal['owner', 'admin', 'write', 'read']] = None
+    shared_by: Optional[UUID4] = None
+    shared_by_name: Optional[str] = None
+    shared_by_email: Optional[str] = None
+    granted_at: Optional[datetime] = None
 
 class TemplatePreview(BaseModel):
     id: UUID4
@@ -289,3 +296,14 @@ class ExtractedMetadata(BaseModel):
     line_count: int
     extracted_at: str
     extraction_method: str = "basic_analysis"
+    
+    # Clause Library models
+class ClauseLibrary(BaseModel):
+    id: str
+    created_at: Optional[datetime] = None
+    user_id: str
+    file_id: Optional[str] = None
+    folder_id: Optional[str] = None
+    clause_type: str
+    clause_text: str
+    clause_metadata: Optional[Dict[str, Any]] = None

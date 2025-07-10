@@ -8,9 +8,9 @@ import asyncio
 
 class DatabaseSettings(BaseSettings):
     """Database configuration using environment variables"""
-    supabase_url: str = "https://knqkunivquuuvnfwrqrn.supabase.co"
-    supabase_anon_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtucWt1bml2cXV1dXZuZndycXJuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDk2OTY2NjUsImV4cCI6MjA2NTI3MjY2NX0.mO8Ud-jS6x6xzCC_Bn7r7EDTFvIvxKEICaGNcE7C52s"
-    supabase_service_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtucWt1bml2cXV1dXZuZndycXJuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0OTY5NjY2NSwiZXhwIjoyMDY1MjcyNjY1fQ.axhQBEv4lAnxmqkIDIKT8O72QwX6ypFk04do5eAPKdw"
+    supabase_url: str = "https://dpaovmacocyatazsnvtx.supabase.co"
+    supabase_anon_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRwYW92bWFjb2N5YXRhenNudnR4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTEzODU3MDMsImV4cCI6MjA2Njk2MTcwM30.ht6xRFCukUx1iiewF47l7f0qeLXOxs8yAaeI-ACuOgQ"
+    supabase_service_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRwYW92bWFjb2N5YXRhenNudnR4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM4NTcwMywiZXhwIjoyMDY2OTYxNzAzfQ.3_fKrWMMPCu83pHD-oxZmAyi_pemW6bJdUUuc_-Hg80"
     
     class Config:
         env_file = ".env"

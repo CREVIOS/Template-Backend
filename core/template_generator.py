@@ -11,6 +11,7 @@ from enum import Enum  # This is missing
 
 logger.add("logs/template_generator.log", rotation="100 MB", level="DEBUG", backtrace=True, diagnose=True)
 
+
 class RelevanceAssessment(BaseModel):
     when_to_include: List[str]
     when_to_exclude: List[str]

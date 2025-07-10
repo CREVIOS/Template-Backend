@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from core.database import initialize_database
 from core.redis_cache import initialize_cache_service
 from core.background_tasks import start_cache_refresh_background, stop_cache_refresh_background
-
+from core.clause_library import router as clause_library_router
 # Import routers directly 
 from core.folders import router as folders_router
 from core.files import router as files_router
@@ -138,6 +138,12 @@ app.include_router(
     template_router,
     prefix="/api/templates",
     tags=["templates"]
+)
+
+app.include_router(
+    clause_library_router,
+    prefix="/api/clause-library",
+    tags=["clause-library"]
 )
 
 # Health check endpoint
