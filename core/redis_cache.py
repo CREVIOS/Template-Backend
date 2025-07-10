@@ -58,14 +58,45 @@ class RedisCacheService:
                 
             except Exception as e:
                 logger.error(f"❌ Failed to initialize Redis cache service: {e}")
+                logger.warning("🔄 Falling back to no-cache mode")
                 self._client = None
-                raise
+                self._initialized = True  # Mark as initialized to prevent retries
     
     @property
     def client(self) -> redis.Redis:
         """Get Redis client"""
-        if not self._initialized or self._client is None:
+        if not self._initialized:
             raise RuntimeError("RedisCacheService not initialized. Call await initialize() first.")
+        if self._client is None:
+            # Return a mock client that does nothing
+            class MockRedisClient:
+                def get(self, key):
+                    return None
+                def setex(self, key, ttl, value):
+                    return True
+                def delete(self, key):
+                    return 0
+                def ping(self):
+                    return True
+                def info(self, section=None):
+                    return {"used_memory": 0, "connected_clients": 0, "used_memory_human": "0B"}
+                def dbsize(self):
+                    return 0
+                def keys(self, pattern):
+                    return []
+                def ttl(self, key):
+                    return -1
+                def pipeline(self):
+                    class MockPipeline:
+                        def setex(self, key, ttl, value):
+                            return self
+                        def delete(self, key):
+                            return self
+                        def execute(self):
+                            return [0, 0]
+                    return MockPipeline()
+            
+            return MockRedisClient()
         return self._client
     
     def _get_user_templates_key(self, user_id: str) -> str:

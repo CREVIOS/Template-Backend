@@ -16,8 +16,9 @@ from supabase import create_client, Client
 
 # Configuration
 MISTRAL_API_KEY = os.environ.get('MISTRAL_API_KEY', 'jhJDPTCJ5ZsDd9lez0jxMQRBs5Qc1UKH')
-SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://knqkunivquuuvnfwrqrn.supabase.co')
-SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtucWt1bml2cXV1dXZuZndycXJuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0OTY5NjY2NSwiZXhwIjoyMDY1MjcyNjY1fQ.axhQBEv4lAnxmqkIDIKT8O72QwX6ypFk04do5eAPKdw')
+SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://dpaovmacocyatazsnvtx.supabase.co')
+SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRwYW92bWFjb2N5YXRhenNudnR4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM4NTcwMywiZXhwIjoyMDY2OTYxNzAzfQ.3_fKrWMMPCu83pHD-oxZmAyi_pemW6bJdUUuc_-Hg80')
+
 
 # Path configuration
 sys.path.insert(0, os.path.dirname(__file__))
