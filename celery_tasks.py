@@ -14,11 +14,14 @@ from functools import lru_cache
 # Use sync Supabase client for Celery tasks
 from supabase import create_client, Client
 
-# Configuration
-MISTRAL_API_KEY = os.environ.get('MISTRAL_API_KEY', 'jhJDPTCJ5ZsDd9lez0jxMQRBs5Qc1UKH')
-SUPABASE_URL = os.environ.get('SUPABASE_URL', 'https://dpaovmacocyatazsnvtx.supabase.co')
-SUPABASE_SERVICE_KEY = os.environ.get('SUPABASE_SERVICE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRwYW92bWFjb2N5YXRhenNudnR4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM4NTcwMywiZXhwIjoyMDY2OTYxNzAzfQ.3_fKrWMMPCu83pHD-oxZmAyi_pemW6bJdUUuc_-Hg80')
+# Configuration – secrets must come from environment variables (.env or container env)
+MISTRAL_API_KEY = os.getenv('MISTRAL_API_KEY')
+SUPABASE_URL = os.getenv('SUPABASE_URL')
+SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY')
 
+# Basic validation to fail fast in mis-configurations
+if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+    raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables must be set for Celery tasks.")
 
 # Path configuration
 sys.path.insert(0, os.path.dirname(__file__))
@@ -32,11 +35,17 @@ if str(parent_root) not in sys.path:
 
 os.makedirs("logs", exist_ok=True)
 
-# Celery configuration
+# Celery configuration – allow override via environment variables
+# Use CELERY_BROKER_URL / CELERY_RESULT_BACKEND if provided, otherwise
+# fall back to a redis instance on localhost (sensible for local dev).
+
+BROKER_URL = os.getenv("CELERY_BROKER_URL", "redis://localhost:6379/0")
+RESULT_BACKEND = os.getenv("CELERY_RESULT_BACKEND", BROKER_URL)
+
 celery_app = Celery(
     'celery_tasks',
-    broker='redis://localhost:6379/0',
-    backend='redis://localhost:6379/0',
+    broker=BROKER_URL,
+    backend=RESULT_BACKEND,
     include=['celery_tasks']
 )
 

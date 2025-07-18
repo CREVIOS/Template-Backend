@@ -27,61 +27,43 @@ logger.add(
     diagnose=True
 )
 
-# Global API configuration
-api_config = None
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
-    global api_config
-    
-    # Startup
-    logger.info("Starting Legal Template Generator API")
-    
-    # Initialize API configuration
-    try:
-        api_config = APIConfiguration()
-        logger.info("API configuration initialized successfully")
-    except Exception as e:
-        logger.error(f"API configuration initialization failed: {e}")
-        raise
-    
-    # Store API config in app state
-    app.state.api_config = api_config
-    
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down Legal Template Generator API")
+    """Unified application startup / shutdown."""
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
-    # Startup
-    print("🚀 Starting application...")
+    # ---------------------- STARTUP ----------------------
+    logger.info("🚀 Starting Legal Template Generator API")
+
+    # 1. Config object (make available via dependency)
+    api_config = APIConfiguration()
+    app.state.api_config = api_config  # optional global access
+
     try:
+        # 2. External services
         await initialize_database()
-        print("✅ Database clients initialized successfully")
-        
         await initialize_cache_service()
-        print("✅ Redis cache service initialized successfully")
-        
         await start_cache_refresh_background()
-        print("✅ Cache refresh background task started")
+        logger.info("✅ All services initialized")
     except Exception as e:
-        print(f"❌ Failed to initialize services: {e}")
+        logger.error(f"❌ Failed during startup: {e}")
         raise
-    
-    yield
-    
-    # Shutdown
-    print("🛑 Shutting down application...")
+
+    # Give control back to FastAPI
     try:
-        stop_cache_refresh_background()
-        print("✅ Cache refresh background task stopped")
-    except Exception as e:
-        print(f"⚠️  Error stopping cache refresh: {e}")
-    
+        yield
+    finally:
+        # -------------------- SHUTDOWN --------------------
+        logger.info("🛑 Shutting down API …")
+        try:
+            stop_cache_refresh_background()
+            # Close Supabase clients gracefully
+            from core.database import get_database_service
+            db = get_database_service()
+            await db.close()
+            logger.info("✅ External connections closed")
+        except Exception as e:
+            logger.warning(f"⚠️  Shutdown issue: {e}")
+
 # Create FastAPI app
 app = FastAPI(
     title="Legal Template Generator API",

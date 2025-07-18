@@ -606,8 +606,11 @@ class CacheRefreshManager:
             import os
             
             # Create sync client for this operation
-            SUPABASE_URL = os.getenv('SUPABASE_URL', 'https://knqkunivquuuvnfwrqrn.supabase.co')
-            SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImtucWt1bml2cXV1dXZuZndycXJuIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc0OTY5NjY2NSwiZXhwIjoyMDY1MjcyNjY1fQ.axhQBEv4lAnxmqkIDIKT8O72QwX6ypFk04do5eAPKdw')
+            SUPABASE_URL = os.getenv('SUPABASE_URL')
+            SUPABASE_SERVICE_KEY = os.getenv('SUPABASE_SERVICE_KEY')
+
+            if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+                raise ValueError("SUPABASE_URL and SUPABASE_SERVICE_KEY environment variables must be set for cache refresh.")
             
             client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
             
