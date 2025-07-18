@@ -1,13 +1,257 @@
+# -------------------------------
+# Production stack for Template-Backend
+# Services:
+# 1. backend – FastAPI served via Gunicorn/UVicorn
+# 2. worker – Celery worker for background tasks
+# 3. redis – Message broker & cache
+# 4. nginx-ssl – SSL proxy for HTTPS support
+# -------------------------------
+
 services:
-  redis:
+  # Redis - Keep internal only for security
+  template-redis:
     image: redis:8.0-alpine
-    container_name: document-processor-redis
+    container_name: template-backend-redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6382:6379" # Internal only - Redis should not be public (avoiding conflicts)
     volumes:
-      - redis-data:/data
-    command: redis-server --save 60 1 --loglevel warning
+      - template-redis-data:/data
+    command: redis-server --save 60 1 --loglevel warning --maxmemory 256mb --maxmemory-policy allkeys-lru --port 6379
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "0.5"
+    networks:
+      - template-backend
+
+  # Nginx SSL Proxy for HTTPS support
+  nginx-ssl:
+    image: nginx:1.27-alpine # fixed tag for reproducibility
+    container_name: template-backend-nginx-ssl
+    depends_on:
+      - backend
+    ports:
+      # Host port 8445  →  container port 443 (avoiding conflicts with existing services)
+      - "8445:443"
+    volumes:
+      # Your Nginx config with the /api proxy
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # Mount the LE certs that ssl‑service / certbot keeps up to date
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "nginx -t"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - template-backend
+
+  # Main API Backend - HTTP only
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: template-backend-api
+    env_file:
+      - .env
+    environment:
+      - HOME=/tmp/app
+      - TMPDIR=/tmp/app
+      - REDIS_URL=redis://template-redis:6379
+      - REDIS_HOST=template-redis
+      - CELERY_BROKER_URL=redis://template-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://template-redis:6379/0
+      # Production environment variables
+      - GUNICORN_WORKERS=4
+      - GUNICORN_THREADS=2
+      - GUNICORN_TIMEOUT=120
+      - GUNICORN_GRACEFUL_TIMEOUT=30
+    working_dir: /app
+    command: >
+      gunicorn main:app
+      -k uvicorn.workers.UvicornWorker
+      -w ${GUNICORN_WORKERS:-4}
+      --threads ${GUNICORN_THREADS:-2}
+      --timeout ${GUNICORN_TIMEOUT:-120}
+      --graceful-timeout ${GUNICORN_GRACEFUL_TIMEOUT:-30}
+      --preload
+      --bind 0.0.0.0:8000
+      --access-logfile -
+      --error-logfile -
+      --access-logformat '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s" %(D)s'
+    volumes:
+      - .:/app # Mount current directory since main.py is in root
+      - template-uploads:/app/uploads
+      - template-tmp:/tmp/app
+      - logs:/app/logs
+    ports:
+      - "8003:8000" # Direct HTTP access (avoiding conflicts with existing services)
+    depends_on:
+      template-redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "0.8"
+    networks:
+      - template-backend
+
+  # Celery Worker
+  celery-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: template-backend-celery-worker
+    working_dir: /app
+    command: celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=${CELERY_WORKER_CONCURRENCY:-4} --max-tasks-per-child=${CELERY_MAX_TASKS_PER_CHILD:-10} --max-memory-per-child=${CELERY_MAX_MEMORY_PER_CHILD:-1048576}
+    env_file:
+      - .env
+    environment:
+      - HOME=/tmp/app
+      - TMPDIR=/tmp/app
+      - REDIS_URL=redis://template-redis:6379
+      - REDIS_HOST=template-redis
+      - CELERY_BROKER_URL=redis://template-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://template-redis:6379/0
+      - CELERY_WORKER_CONCURRENCY=4
+      - CELERY_MAX_TASKS_PER_CHILD=10
+      - CELERY_MAX_MEMORY_PER_CHILD=1048576 # 1GB in KB
+    volumes:
+      - .:/app # Mount current directory since main.py is in root
+      - template-uploads:/app/uploads
+      - template-tmp:/tmp/app
+      - logs:/app/logs
+    depends_on:
+      template-redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "celery -A celery_tasks.celery_app inspect ping || exit 1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 1.2G # Increased for processing
+          cpus: "0.8"
+    networks:
+      - template-backend
+
+  # Celery Beat Scheduler
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: template-backend-celery-beat
+    working_dir: /app
+    command: celery -A celery_tasks.celery_app beat --loglevel=info --schedule=/tmp/app/celerybeat-schedule
+    env_file:
+      - .env
+    environment:
+      - HOME=/tmp/app
+      - TMPDIR=/tmp/app
+      - REDIS_URL=redis://template-redis:6379
+      - REDIS_HOST=template-redis
+      - CELERY_BROKER_URL=redis://template-redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://template-redis:6379/0
+    volumes:
+      - .:/app # Mount current directory since main.py is in root
+      - template-uploads:/app/uploads
+      - template-tmp:/tmp/app
+      - logs:/app/logs
+    depends_on:
+      template-redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep '[c]elery.*beat' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.3"
+    networks:
+      - template-backend
+
+  # Flower Monitoring - Keep internal only for security
+  celery-flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: template-backend-celery-flower
+    working_dir: /app
+    command: celery -A celery_tasks.celery_app flower --port=5555 --broker=redis://template-redis:6379
+    ports:
+      - "127.0.0.1:5558:5555" # Internal only - monitoring should not be public (avoiding conflicts)
+    env_file:
+      - .env
+    environment:
+      - REDIS_URL=redis://template-redis:6379
+    volumes:
+      - .:/app
+    depends_on:
+      - template-redis
+      - celery-worker
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:5555 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.2"
+    networks:
+      - template-backend
+    profiles:
+      - development
 
 volumes:
-  redis-data:
+  template-redis-data:
+    driver: local
+  template-uploads:
+    driver: local
+  template-tmp:
+    driver: local
+  logs:
+    driver: local
+
+networks:
+  template-backend:
+    driver: bridge
+    name: template-backend-network
+    ipam:
+      config:
+        - subnet: 172.21.0.0/16

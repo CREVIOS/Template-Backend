@@ -1,0 +1,87 @@
+# -------------------------------
+# Production stack for Template-Backend
+# Services:
+#   1. backend  – FastAPI served via Gunicorn/UVicorn
+#   2. worker   – Celery worker for background tasks
+#   3. redis    – Message broker & cache
+# -------------------------------
+
+services:
+  backend:
+    build: .
+    container_name: template-backend-api
+    command: >-
+      gunicorn -w 4 -k uvicorn.workers.UvicornWorker --log-level info -b 0.0.0.0:8000 main:app
+    env_file: .env
+    environment:
+      # Fallbacks if not provided in .env
+      REDIS_HOST: redis
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    volumes:
+      - .:/app
+      - logs:/app/logs
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: template-backend-worker
+    command: >-
+      celery -A celery_tasks.celery_app worker --loglevel=info --concurrency=4
+    env_file: .env
+    environment:
+      REDIS_HOST: redis
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/0
+    volumes:
+      - .:/app
+      - logs:/app/logs
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "celery",
+          "-A",
+          "celery_tasks.celery_app",
+          "inspect",
+          "ping",
+          "--timeout=1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  redis:
+    image: redis:8.0-alpine
+    container_name: template-backend-redis
+    expose:
+      - "6379"
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  logs:

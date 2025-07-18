@@ -7,14 +7,15 @@ import asyncio
 
 
 class DatabaseSettings(BaseSettings):
-    """Database configuration using environment variables"""
-    supabase_url: str = "https://dpaovmacocyatazsnvtx.supabase.co"
-    supabase_anon_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRwYW92bWFjb2N5YXRhenNudnR4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTEzODU3MDMsImV4cCI6MjA2Njk2MTcwM30.ht6xRFCukUx1iiewF47l7f0qeLXOxs8yAaeI-ACuOgQ"
-    supabase_service_key: str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRwYW92bWFjb2N5YXRhenNudnR4Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1MTM4NTcwMywiZXhwIjoyMDY2OTYxNzAzfQ.3_fKrWMMPCu83pHD-oxZmAyi_pemW6bJdUUuc_-Hg80"
-    
+    """Database configuration (values must be provided via environment variables)."""
+
+    supabase_url: str
+    supabase_anon_key: str
+    supabase_service_key: str
+
     class Config:
         env_file = ".env"
-        env_prefix = "DB_"
+        env_prefix = ""  # use exact env var names (e.g., SUPABASE_URL)
         extra = "allow"
 
 
@@ -52,6 +53,19 @@ class DatabaseService:
             except Exception as e:
                 print(f"❌ Failed to initialize Supabase clients: {e}")
                 raise
+
+    async def close(self):
+        """Gracefully close Supabase websocket connections."""
+        if self._anon_client is not None:
+            try:
+                await self._anon_client.aclose()
+            except Exception:  # noqa: E722
+                pass
+        if self._service_client is not None:
+            try:
+                await self._service_client.aclose()
+            except Exception:  # noqa: E722
+                pass
 
     @property
     def anon(self) -> AsyncClient:
