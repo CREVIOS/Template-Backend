@@ -72,8 +72,6 @@ class ClauseExtraction(BaseModel):
     clauses: List[ClauseData]
 
 
-
-
 class AlternativeClause(BaseModel):
     alternative_text: str
     drafting_note: str
@@ -81,12 +79,14 @@ class AlternativeClause(BaseModel):
 
 class SubClause(BaseModel):
     subclause_number: Union[str, float]  # Allow both numeric and text identifiers
+    subclause_title: Optional[str] = None
     subclause_text: str
     drafting_note: str
     alternatives: Optional[List[AlternativeClause]] = Field(default_factory=list)
 
 class MainClause(BaseModel):
     type: ClauseType
+    clause_title: Optional[str] = None
     clause_text: str
     drafting_note: str
     subclauses: Optional[List[SubClause]] = Field(default_factory=list)  # Changed from Dict to List
@@ -184,15 +184,24 @@ IMPORTANT REQUIREMENTS:
    
    - USE THESE FORMATTINGS ONLY WHILE WRITING CLAUSE LISTS. WRITE OTHER PARAGRAPHS AND SECTIONS IN REGULAR MARKDOWN FORMAT.
 
-5. CLAUSE REQUIREMENTS:
+5. CONTENT REQUIREMENTS:
+   - PRESERVE ALL CONTENT: The generated template must be a complete representation of the original document. Do not omit any sections. If the document is long, continue generating until the entire document is processed.
+   - NON-CLAUSE CONTENT: Preserve all text that is not part of a numbered or lettered clause. This includes:
+     * The document title.
+     * Any introductory paragraphs, background information, and recitals that appear before the main clauses.
+     * All content at the end of the document, such as signature blocks, witness sections, and execution provisions.
+   - CLAUSE FIDELITY: Stick to the original language, phrasing, and length of each clause as closely as possible. Preserve all original paragraph breaks and newlines within the text. Your role is to templatize, not to redraft or summarize.
+
+6. CLAUSE REQUIREMENTS:
    - Include ALL clauses from the original document in the template (if the clause is not relevant to the template, do not include it)
    - Maintain the exact structure and hierarchy of clauses using the PREFIX formats in point 4.
+   - PRESERVE TITLES: If a clause or sub-clause has a title or heading, it must be preserved and included in the content.
    - Keep the original clause organization
    - Preserve all legal definitions and references
    - Include all schedules, annexes, and appendices
    - Maintain cross-references between clauses
    - Keep all boilerplate language and standard provisions
-   - Preserve the exact wording of legal terms and conditions
+   - Preserve the exact wording of legal terms and conditions, including paragraph breaks and newlines.
    - Include all jurisdictional and governing law clauses
    - Maintain all signature blocks and execution provisions
    - PRESERVE the existing clause hierarchy and numbering structure of the original document using the PREFIX formats in point 4.
@@ -263,6 +272,10 @@ Contract text:
 
 **4. CONTENT INTEGRATION REQUIREMENTS**
 - Merge best practices from both documents
+- **Preserve Non-Clause Content**: Intelligently merge the background, recital, and other non-clause sections from both the template and the new contract to create a comprehensive preamble. Also merge the concluding sections like signature blocks.
+- **Clause Fidelity**: When incorporating clauses, respect their original length and style. If a clause from the new contract is added, it should retain its original character (long or short). Preserve all original paragraph breaks and newlines.
+- **Preserve Titles**: If clauses or sub-clauses have titles, ensure they are kept.
+- **Completeness**: Ensure the final merged template is complete and represents a full legal document.
 - Add new relevant clauses from the second document
 - Improve existing clauses where appropriate
 - Include ALL relevant clauses (exclude only those not applicable to template)
@@ -317,33 +330,37 @@ You must return the response ONLY in JSON format following this exact structure:
             "preamble": "Any introductory text that appears before the numbered clauses",
             "recitals": "WHEREAS clauses and background information",
             "definitions": "Key definitions section if not included in numbered clauses",
-            "signature_block": "Template for signature and execution section"
+            "signature_block": "Template for signature and execution section",
+            "post_clause_content": "Any text that appears after the main list of clauses, but before the signature block."
         }},
         "clauses": [
             {{
                 "clause_number": "1.",
                 "clause_type": "Payment Terms Clause",
                 "clause_title": "[Title of the Clause]",
-                "clause_text": "Full text of the main clause with all [Placeholders] intact...",
+                "clause_text": "Full text of the main clause with all [Placeholders] and original newlines intact...",
                 "drafting_note": "Detailed explanation of when and how to use this clause, its purpose, legal implications, and placement guidance...",
                 "subclauses": [
                     {{
                         "subclause_number": "1.1",
-                        "subclause_text": "Full text of subclause 1.1 with [Placeholders]...",
+                        "subclause_title": "[Title of the Sub-Clause, if any]",
+                        "subclause_text": "Full text of subclause 1.1 with [Placeholders] and original newlines intact...",
                         "drafting_note": "Explanation of this subclause's specific function, legal implications, and practical advice for customizing...",
                         "sub_subclauses": [
                             {{
                                 "sub_subclause_number": "1.1.1",
-                                "sub_subclause_text": "Full text of sub-subclause 1.1.1 with [Placeholders]...",
+                                "subclause_title": "[Title of the Sub-Sub-Clause, if any]",
+                                "sub_subclause_text": "Full text of sub-subclause 1.1.1 with [Placeholders] and original newlines intact...",
                                 "drafting_note": "Explanation of this sub-subclause's specific function, legal implications, and practical advice...",
                                 "sub_sub_subclauses": [
                                     {{
                                         "sub_sub_subclause_number": "1.1.1.1",
-                                        "sub_sub_subclause_text": "Full text of sub-sub-subclause 1.1.1.1 with [Placeholders]...",
+                                        "subclause_title": "[Title of the Sub-Sub-Sub-Clause, if any]",
+                                        "sub_sub_subclause_text": "Full text of sub-sub-subclause 1.1.1.1 with [Placeholders] and original newlines intact...",
                                         "drafting_note": "Explanation of this provision, legal implications, and implementation advice...",
                                         "alternatives": [
                                             {{
-                                                "alternative_text": "Alternative wording...",
+                                                "alternative_text": "Alternative wording with newlines preserved...",
                                                 "drafting_note": "Explanation of this alternative including legal implications and risk assessment...",
                                                 "use_when": "When this alternative should be used"
                                             }}
@@ -352,7 +369,7 @@ You must return the response ONLY in JSON format following this exact structure:
                                 ],
                                 "alternatives": [
                                     {{
-                                        "alternative_text": "Alternative wording for this sub-subclause...",
+                                        "alternative_text": "Alternative wording for this sub-subclause with newlines preserved...",
                                         "drafting_note": "Explanation of this alternative including legal implications and risk assessment...",
                                         "use_when": "When this alternative should be used"
                                     }}
@@ -361,7 +378,7 @@ You must return the response ONLY in JSON format following this exact structure:
                         ],
                         "alternatives": [
                             {{
-                                "alternative_text": "Alternative wording for this subclause...",
+                                "alternative_text": "Alternative wording for this subclause with newlines preserved...",
                                 "drafting_note": "Explanation of this alternative including legal implications, industry considerations, and risk assessment...",
                                 "use_when": "Specific scenario when this alternative should be used"
                             }}
@@ -370,7 +387,7 @@ You must return the response ONLY in JSON format following this exact structure:
                 ],
                 "alternatives": [
                     {{
-                        "alternative_text": "Alternative wording for the entire main clause...",
+                        "alternative_text": "Alternative wording for the entire main clause with newlines preserved...",
                         "drafting_note": "Detailed explanation of this alternative including legal implications, industry considerations, and risk assessment...",
                         "use_when": "Specific scenario when this alternative should be used instead of the main clause..."
                     }}
@@ -380,11 +397,23 @@ You must return the response ONLY in JSON format following this exact structure:
                 "clause_number": "2.",
                 "clause_type": "Scope of Work (Statement of Work) Clause",
                 "clause_title": "[Title of Clause 2]",
-                "clause_text": "Full text of clause 2 with [Placeholders]...",
+                "clause_text": "Full text of clause 2 with [Placeholders] and newlines preserved...",
                 "drafting_note": "Detailed explanation of purpose, positioning advice, usage scenarios, legal implications, implementation guidelines, and risk considerations..."
             }}
         ]
     }}
+
+**INSTRUCTIONS FOR POPULATING THE JSON:**
+1.  **NON-CLAUSE CONTENT**: Carefully analyze the beginning and end of the template text.
+    -   Populate the `general_sections` object with any content that is not part of a numbered clause.
+    -   `preamble`: Capture any introductory text.
+    -   `recitals`: Capture any "WHEREAS" clauses or background statements.
+    -   `definitions`: Capture the main definitions section if it's not a numbered clause.
+    -   `post_clause_content`: Capture any text that appears after the list of clauses but before the final signature/execution section. This could include schedules, annexes, or appendices that are not part of the main signature block.
+    -   `signature_block`: Capture the entire execution section, including signature lines and witness details.
+2.  **CLAUSE CONTENT**: Process all numbered/lettered clauses and place them in the `clauses` array, maintaining their original hierarchy and text.
+3.  **TITLES**: Capture the title for each clause and sub-clause in the `clause_title` and `subclause_title` fields respectively. If a sub-clause has no title, this field can be omitted or null.
+4.  **FORMATTING**: Preserve all original paragraph breaks and newlines within all text fields (like `clause_text`, `subclause_text`, `drafting_note`, etc.). The JSON string should contain `\n` characters for line breaks.
 
 **REQUIREMENTS FOR DRAFTING NOTES:**
 
@@ -403,7 +432,7 @@ You must return the response ONLY in JSON format following this exact structure:
    - Risk assessment compared to main clause
    - Compliance implications
 
-3. **CLAUSE TYPES must be selected from this list:**
+3. **CLAUSE TYPES must be selected from this list (Keep Original Clauses but distribute them into the following categories):**
    - **Fundamental Clauses:** Payment Terms Clause, Scope of Work (Statement of Work) Clause, Term & Termination Clause, Price Adjustment / Escalation Clause
    - **Protective Clauses:** Indemnity Clause, Limitation of Liability Clause, Exemption / Exclusion Clause, Liquidated Damages Clause, Exculpatory Clause, Gross-Up Clause, Retention of Title (Romalpa) Clause
    - **Dispute Resolution Clauses:** Arbitration Clause, Dispute Resolution / Escalation Clause, Choice of Law Clause, Confession of Judgment Clause
@@ -489,33 +518,37 @@ You must return the response ONLY in JSON format following this exact structure:
             "preamble": "Any introductory text that appears before the numbered clauses",
             "recitals": "WHEREAS clauses and background information",
             "definitions": "Key definitions section if not included in numbered clauses",
-            "signature_block": "Template for signature and execution section"
+            "signature_block": "Template for signature and execution section",
+            "post_clause_content": "Any text that appears after the main list of clauses, but before the signature block."
         }},
         "clauses": [
             {{
                 "clause_number": "1.",
                 "clause_type": "Payment Terms Clause",
                 "clause_title": "[Title of the Clause]",
-                "clause_text": "Full text of the main clause with all [Placeholders] intact...",
+                "clause_text": "Full text of the main clause with all [Placeholders] and newlines preserved...",
                 "drafting_note": "Detailed explanation of when and how to use this clause, its purpose, legal implications, and placement guidance of every clauses in this...",
                 "subclauses": [
                     {{
                         "subclause_number": "1.1",
-                        "subclause_text": "Full text of subclause 1.1 with [Placeholders]...",
+                        "subclause_title": "[Title of the Sub-Clause, if any]",
+                        "subclause_text": "Full text of subclause 1.1 with [Placeholders] and newlines preserved...",
                         "drafting_note": "Explanation of this subclause's specific function, legal implications, and practical advice for customizing...",
                         "sub_subclauses": [
                             {{
                                 "sub_subclause_number": "1.1.1",
-                                "sub_subclause_text": "Full text of sub-subclause 1.1.1 with [Placeholders]...",
+                                "subclause_title": "[Title of the Sub-Sub-Clause, if any]",
+                                "sub_subclause_text": "Full text of sub-subclause 1.1.1 with [Placeholders] and newlines preserved...",
                                 "drafting_note": "Explanation of this sub-subclause's specific function, legal implications, and practical advice...",
                                 "sub_sub_subclauses": [
                                     {{
                                         "sub_sub_subclause_number": "1.1.1.1",
-                                        "sub_sub_subclause_text": "Full text of sub-sub-subclause 1.1.1.1 with [Placeholders]...",
+                                        "subclause_title": "[Title of the Sub-Sub-Sub-Clause, if any]",
+                                        "sub_sub_subclause_text": "Full text of sub-sub-subclause 1.1.1.1 with [Placeholders] and newlines preserved...",
                                         "drafting_note": "Explanation of this provision, legal implications, and implementation advice...",
                                         "alternatives": [
                                             {{
-                                                "alternative_text": "Alternative wording...",
+                                                "alternative_text": "Alternative wording with newlines preserved...",
                                                 "drafting_note": "Explanation of this alternative including legal implications and risk assessment...",
                                                 "use_when": "When this alternative should be used"
                                             }}
@@ -524,7 +557,7 @@ You must return the response ONLY in JSON format following this exact structure:
                                 ],
                                 "alternatives": [
                                     {{
-                                        "alternative_text": "Alternative wording for this sub-subclause...",
+                                        "alternative_text": "Alternative wording for this sub-subclause with newlines preserved...",
                                         "drafting_note": "Explanation of this alternative including legal implications and risk assessment...",
                                         "use_when": "When this alternative should be used"
                                     }}
@@ -533,7 +566,7 @@ You must return the response ONLY in JSON format following this exact structure:
                         ],
                         "alternatives": [
                             {{
-                                "alternative_text": "Alternative wording for this subclause...",
+                                "alternative_text": "Alternative wording for this subclause with newlines preserved...",
                                 "drafting_note": "Explanation of this alternative including legal implications, industry considerations, and risk assessment...",
                                 "use_when": "Specific scenario when this alternative should be used"
                             }}
@@ -542,7 +575,7 @@ You must return the response ONLY in JSON format following this exact structure:
                 ],
                 "alternatives": [
                     {{
-                        "alternative_text": "Alternative wording for the entire main clause...",
+                        "alternative_text": "Alternative wording for the entire main clause with newlines preserved...",
                         "drafting_note": "Detailed explanation of this alternative including legal implications, industry considerations, and risk assessment...",
                         "use_when": "Specific scenario when this alternative should be used instead of the main clause..."
                     }}
@@ -552,7 +585,7 @@ You must return the response ONLY in JSON format following this exact structure:
                 "clause_number": "2.",
                 "clause_type": "Scope of Work (Statement of Work) Clause",
                 "clause_title": "[Title of Clause 2]",
-                "clause_text": "Full text of clause 2 with [Placeholders]...",
+                "clause_text": "Full text of clause 2 with [Placeholders] and newlines preserved...",
                 "drafting_note": "Detailed explanation of purpose, positioning advice, usage scenarios, legal implications, implementation guidelines, and risk considerations..."
             }}
         ]
@@ -566,14 +599,15 @@ You must return the response ONLY in JSON format following this exact structure:
     - Operational (Boilerplate) Clauses: "Assignment Clause", "Change Control / Changes Clause", "Amendment Clause", "Notice Clause", "Severability Clause", "Survival Clause", "Entire Agreement Clause", "Waiver Clause", "Interpretation Clause", "Electronic Signatures Clause"
 
     IMPORTANT RULES:
-    1. Inside any field that contains text from the contract (like "clause_text", "drafting_note"), you MUST escape any double quotes (") with a backslash (\\"). For example, if the text is 'The term "Agreement"...', it must be represented in the JSON as '"clause_text": "The term \\"Agreement\\"..."'.
+    1. Inside any field that contains text from the contract (like "clause_text", "drafting_note"), you MUST escape any double quotes (") with a backslash (\\"). For example, if the text is 'The term "Agreement"...', it must be represented in the JSON as '"clause_text": "The term \\"Agreement\\"..."'. Preserve all newline characters as `\n`.
     2. The "clause_type" field must match exactly one of the predefined clause types listed above
-    3. "subclauses", "sub_subclauses", "sub_sub_subclauses", and "alternatives" are optional fields
-    4. Ensure proper nesting and comma placement
-    5. Remove any trailing commas
-    6. Maintain the hierarchical numbering system (1., 1.1, 1.1.1, 1.1.1.1)
-    7. All [Placeholders] should remain in square brackets format
-    8. Do not add any explanations or comments, just return the fixed JSON
+    3. "subclauses", "sub_subclauses", "sub_sub_subclauses", and "alternatives" are optional fields.
+    4. The "subclause_title" field is optional and should only be present if the sub-clause has a title.
+    5. Ensure proper nesting and comma placement
+    6. Remove any trailing commas
+    7. Maintain the hierarchical numbering system (1., 1.1, 1.1.1, 1.1.1.1)
+    8. All [Placeholders] should remain in square brackets format
+    9. Do not add any explanations or comments, just return the fixed JSON
 
     JSON Error Found: {error_message}
 
@@ -976,7 +1010,8 @@ Invalid JSON:
         * ALPHA_ITEM_MAIN: [content]
         * SUB_ALPHA_ITEM: [content]
         * And all other existing formats
-    - Preserve existing hierarchical structure
+    - Preserve existing hierarchical structure, including clause and sub-clause titles.
+    - Preserve all original paragraph breaks and newlines within the text.
     - Keep existing cross-references and internal consistency
 
     5. WHAT NOT TO DO:
