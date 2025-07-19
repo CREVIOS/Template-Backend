@@ -27,9 +27,9 @@ async def get_folder_clauses(
     """
     print(f"[DEBUG] get_folder_clauses called with folder_id={folder_id} (type={type(folder_id)}), user_id={user_id} (type={type(user_id)})")
     
+    cache_key = f"clause_library:folder:{folder_id}:user:{user_id}"
     # Try cache first (if available)
     try:
-        cache_key = f"clause_library:folder:{folder_id}:user:{user_id}"
         cached = await asyncio.to_thread(cache.client.get, cache_key)
         if cached:
             print(f"[DEBUG] Returning {len(json.loads(cached))} clauses from cache.")
@@ -54,7 +54,7 @@ async def get_folder_clauses(
         # Fetch file information for all file_ids
         file_info_map = {}
         if file_ids:
-            files_query = db.client.from_("files").select("id, original_filename, file_size, file_type, status, created_at, extracted_metadata").in_("id", file_ids).eq("user_id", user_id)
+            files_query = db.client.from_("files").select("id, original_filename, file_size, file_type, status, created_at, extracted_metadata, storage_url").in_("id", file_ids).eq("user_id", user_id)
             files_result = await files_query.execute()
             files = files_result.data or []
             
