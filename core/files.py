@@ -494,6 +494,43 @@ async def get_file_by_id(
             status_code=500, detail=f"Error fetching file: {str(e)}"
         )
 
+@router.get("/{file_id}/view")
+async def get_file_for_viewing(
+    file_id: str,
+    user_id: str = Query(..., description="User ID"),
+    db: DatabaseService = Depends(get_database_service)
+):
+    """Get file data formatted for viewing in frontend"""
+    try:
+        response = await (
+            db.client.from_("files")
+            .select("storage_url, original_filename, file_type, file_size")
+            .eq("id", file_id)
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        file_data = response.data
+        
+        # Return data in the format expected by frontend
+        return {
+            "file_url": file_data.get("storage_url"),
+            "file_name": file_data.get("original_filename"),
+            "file_type": file_data.get("file_type"),
+            "file_size": file_data.get("file_size")
+        }
+
+    except Exception as e:
+        if "No rows" in str(e) or "PGRST116" in str(e):
+            raise HTTPException(status_code=404, detail="File not found")
+        raise HTTPException(
+            status_code=500, detail=f"Error fetching file for viewing: {str(e)}"
+        )
+
 @router.get("/{file_id}/markdown")
 async def get_file_markdown(
     file_id: str,
