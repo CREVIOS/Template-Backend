@@ -246,6 +246,12 @@ class TemplateGenerationJobManager(JobManager):
     
     async def _wait_for_files_processed(self, file_ids: List[str], job_id: str, max_wait_minutes: int = 10):
         """Wait for all files to be processed"""
+        # Guard against empty file_ids to prevent division by zero
+        if not file_ids:
+            logger.warning(f"Job {job_id}: No files to process, returning 0")
+            await self.update_job_step(job_id, "process_files", "completed", 100)
+            return 0
+        
         start_time = datetime.utcnow()
         timeout = start_time + timedelta(minutes=max_wait_minutes)
         
