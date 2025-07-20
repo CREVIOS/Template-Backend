@@ -55,9 +55,7 @@ async def fetch_templates_from_db(
     
     try:
         # Build the query
-        query = db.client.from_("templates").select(
-            "*, folders(name, color), template_usage_stats(action_type, created_at)"
-        ).eq("folders.user_id", user_id)
+        query = db.client.from_("templates").select("*, folders!inner(name, color), template_usage_stats(action_type, created_at)").eq("folders.user_id", user_id)
 
         # Apply filters
         if search:
