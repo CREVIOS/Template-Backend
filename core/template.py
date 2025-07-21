@@ -42,59 +42,28 @@ def get_cache_service_dep() -> RedisCacheService:
 
 async def fetch_templates_from_db(
     user_id: str,
-    sort_field: str = "name",
-    sort_direction: str = "asc",
+    sort_field: str = "created_at",
+    sort_direction: str = "desc",
     search: Optional[str] = None,
     folder_id: Optional[str] = None,
     template_type: Optional[str] = None,
     db: DatabaseService = None
 ) -> List[Dict[str, Any]]:
-    """Fetch templates from database and return processed data"""
+    """Fetch templates from database using RPC and return processed data sorted by latest created_at"""
     if db is None:
         db = get_database_service()
     
     try:
-        # Build the query
-        query = db.client.from_("templates").select("*, folders!inner(name, color), template_usage_stats(action_type, created_at)").eq("folders.user_id", user_id)
-
-        # Apply filters
-        if search:
-            query = query.ilike("name", f"%{search}%")
-        if folder_id:
-            query = query.eq("folder_id", folder_id)
-        if template_type:
-            query = query.eq("template_type", template_type)
-
-        # Apply sorting for database fields
-        if sort_field in ["name", "folder_name"]:
-            field_to_sort = sort_field if sort_field == "name" else "folders.name"
-            query = query.order(field_to_sort, desc=(sort_direction == "desc"))
-        
-        result = await query.execute()
+        # Use RPC to get user templates (properly filtered by user_id)
+        result = await db.client.rpc("get_user_templates", {"user_id": user_id}).execute()
 
         if not result.data:
             return []
 
-        # Process results
+        # Process and sort results by created_at (latest first)
         templates = []
         for item in result.data:
             try:
-                folder = item.get("folders") or {}  # Handle None case
-                usage_stats = item.get("template_usage_stats", [])
-
-                # Get most recent action
-                last_action = None
-                last_action_date = None
-                if usage_stats:
-                    sorted_stats = sorted(usage_stats, key=lambda x: x.get("created_at", ""), reverse=True)
-                    if sorted_stats:
-                        last_action = sorted_stats[0].get("action_type")
-                        last_action_date = sorted_stats[0].get("created_at")
-
-                # Count files for this folder
-                files_response = await db.client.from_("files").select("*", count="exact").eq("folder_id", item.get("folder_id")).execute()
-                files_count = files_response.count or 0
-
                 template_data = {
                     "id": item.get("id"),
                     "folder_id": item.get("folder_id"),
@@ -107,34 +76,31 @@ async def fetch_templates_from_db(
                     "is_active": item.get("is_active"),
                     "created_at": item.get("created_at"),
                     "updated_at": item.get("updated_at"),
-                    "folder_name": folder.get("name"),
-                    "folder_color": folder.get("color"),
-                    "files_count": files_count,
-                    "last_action_type": last_action,
-                    "last_action_date": last_action_date
+                    "folder_name": item.get("folder_name")
                 }
                 templates.append(template_data)
             except Exception as e:
                 logger.warning(f"Skipping template {item.get('id', 'unknown')} due to data error: {str(e)}")
                 continue
         
-        # Apply post-processing sorting
-        if sort_field in ["last_action_type", "last_action_date", "files_count"]:
-            if sort_field == "last_action_type":
-                templates.sort(
-                    key=lambda t: (t["last_action_type"] is None, t["last_action_type"] or ""),
-                    reverse=(sort_direction == "desc")
-                )
-            elif sort_field == "last_action_date":
-                templates.sort(
-                    key=lambda t: (t["last_action_date"] is None, t["last_action_date"] or ""),
-                    reverse=(sort_direction == "desc")
-                )
-            elif sort_field == "files_count":
-                templates.sort(
-                    key=lambda t: t["files_count"],
-                    reverse=(sort_direction == "desc")
-                )
+        # Sort by created_at descending (latest first)
+        # Parse timestamp strings for proper datetime sorting
+        def parse_timestamp(timestamp_str):
+            if not timestamp_str:
+                return datetime.min
+            try:
+                # Handle Supabase timestamp format: "2025-07-20 17:57:46.680676+00"
+                if timestamp_str.endswith('+00'):
+                    timestamp_str = timestamp_str[:-3] + '+00:00'
+                return datetime.fromisoformat(timestamp_str)
+            except (ValueError, TypeError):
+                logger.warning(f"Could not parse timestamp: {timestamp_str}")
+                return datetime.min
+        
+        templates.sort(
+            key=lambda t: parse_timestamp(t.get("created_at")), 
+            reverse=True
+        )
 
         return templates
 
@@ -170,10 +136,10 @@ async def get_active_job_step(
 async def get_templates(
     user_id: str = Query(...),
     sort_field: str = Query(
-        "name",
-        pattern="^(name|folder_name|files_count|last_action_type|last_action_date)$"
+        "created_at",
+        pattern="^(name|folder_name|created_at)$"
     ),
-    sort_direction: str = Query("asc", pattern="^(asc|desc)$"),
+    sort_direction: str = Query("desc", pattern="^(asc|desc)$"),
     search: Optional[str] = Query(None),
     folder_id: Optional[str] = Query(None),
     template_type: Optional[str] = Query(None),
@@ -200,11 +166,6 @@ async def get_templates(
         if not templates_data:
             templates_data = await fetch_templates_from_db(
                 user_id=user_id,
-                sort_field="name",  # Get unsorted data for caching
-                sort_direction="asc",  # Get unsorted data for caching
-                search=None,  # No filters for caching
-                folder_id=None,  # No filters for caching
-                template_type=None,  # No filters for caching
                 db=db
             )
             
@@ -226,35 +187,25 @@ async def get_templates(
                 templates_data = [t for t in templates_data if t.get("template_type") == template_type]
                 logger.debug(f"Applied type filter '{template_type}': {len(templates_data)} templates remain")
             
-            # Apply sorting
-            if sort_field == "name":
-                templates_data.sort(
-                    key=lambda t: t.get("name", "").lower(),
-                    reverse=(sort_direction == "desc")
-                )
-            elif sort_field == "folder_name":
-                templates_data.sort(
-                    key=lambda t: t.get("folder_name", "").lower(),
-                    reverse=(sort_direction == "desc")
-                )
-            elif sort_field == "last_action_type":
-                templates_data.sort(
-                    key=lambda t: (t.get("last_action_type") is None, t.get("last_action_type") or ""),
-                    reverse=(sort_direction == "desc")
-                )
-            elif sort_field == "last_action_date":
-                templates_data.sort(
-                    key=lambda t: (t.get("last_action_date") is None, t.get("last_action_date") or ""),
-                    reverse=(sort_direction == "desc")
-                )
-            elif sort_field == "files_count":
-                templates_data.sort(
-                    key=lambda t: t.get("files_count", 0),
-                    reverse=(sort_direction == "desc")
-                )
-            
-            if sort_field != "name" or sort_direction != "asc":
-                logger.debug(f"Applied sorting: {sort_field} {sort_direction}")
+            # Data is already sorted by created_at (latest first) from RPC
+            # Apply additional sorting if requested  
+            if sort_field != "created_at":
+                if sort_field == "name":
+                    templates_data.sort(
+                        key=lambda t: t.get("name", "").lower(),
+                        reverse=(sort_direction == "desc")
+                    )
+                elif sort_field == "folder_name":
+                    templates_data.sort(
+                        key=lambda t: t.get("folder_name", "").lower(),
+                        reverse=(sort_direction == "desc")
+                    )
+                logger.debug(f"Applied custom sorting: {sort_field} {sort_direction}")
+            else:
+                # If sorting by created_at and direction is asc, reverse the default desc order
+                if sort_direction == "asc":
+                    templates_data.reverse()
+                    logger.debug("Applied created_at ascending sort")
         
         # Convert to TemplateWithDetails objects
         templates = []
@@ -272,10 +223,11 @@ async def get_templates(
                 created_at=template_data.get("created_at"),
                 updated_at=template_data.get("updated_at"),
                 folder_name=template_data.get("folder_name"),
-                folder_color=template_data.get("folder_color"),
-                files_count=template_data.get("files_count"),
-                last_action_type=template_data.get("last_action_type"),
-                last_action_date=template_data.get("last_action_date")
+                folder_color=None,
+                files_count=0,  # Required field, must have default
+                last_action_type=None,
+                last_action_date=None,
+
             )
             templates.append(template)
 
@@ -286,7 +238,7 @@ async def get_templates(
             filter_info.append(f"folder_id='{folder_id}'")
         if template_type:
             filter_info.append(f"type='{template_type}'")
-        if sort_field != "name" or sort_direction != "asc":
+        if sort_field != "created_at" or sort_direction != "desc":
             filter_info.append(f"sort={sort_field}_{sort_direction}")
         
         filter_str = f" with filters: {', '.join(filter_info)}" if filter_info else ""
