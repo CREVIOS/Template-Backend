@@ -121,7 +121,7 @@ class DocumentProcessor:
     "contract_name": "name or title of the contract",
     "parties": ["Party 1", "Party 2"],
     "date": "contract date (The date from when the contract is effective) in YYYY-MM-DD format if found, otherwise null",
-    "summary": "provide a concise summary of the contract in 5-7 sentences only"
+    "summary": "provide a concise summary of the contract in 2-3 sentences only"
 }}
 
 IMPORTANT: Return ONLY the JSON object with the exact fields specified above. Use strict JSON formatting with proper quotes and brackets. Do not include any additional text, explanations, or markdown formatting.
