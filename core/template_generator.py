@@ -322,16 +322,16 @@ Contract text:
         # ])
         
         prompt = f"""Using your legal documents, you have created a template for your junior lawyers. Now add comprehensive drafting notes to the template so that your junior lawyers can know when and how to use the template effectively. You shouldn't change anything in the clauses, I want to have all of them in the following format.
-
+DO NOT WRITE ANYTHING ELSE THAN THE JSON RESPONSE IN YOUR RESPONSE. NO NEED FOR ANY EXPLANATION BY YOU. WRITE ONLY THE CONTENT FOR THE JSON.
 You must return the response ONLY in JSON format following this exact structure:
 
     {{
         "general_sections": {{
-            "preamble": "Any introductory text that appears before the numbered clauses",
-            "recitals": "WHEREAS clauses and background information",
-            "definitions": "Key definitions section if not included in numbered clauses",
-            "signature_block": "Template for signature and execution section",
-            "post_clause_content": "Any text that appears after the main list of clauses, but before the signature block."
+            "preamble": "Any introductory text that appears before the numbered clauses relevant to the template only",
+            "recitals": "WHEREAS clauses and background information relevant to the template only",
+            "definitions": "Key definitions section if not included in numbered clauses, relevant to the template only",
+            "signature_block": "Template for signature and execution section relevant to the template only",
+            "post_clause_content": "Any text that appears after the main list of clauses, but before the signature block, relevant to the template only"
         }},
         "clauses": [
             {{
@@ -345,19 +345,16 @@ You must return the response ONLY in JSON format following this exact structure:
                         "subclause_number": "1.1",
                         "subclause_title": "[Title of the Sub-Clause, if any]",
                         "subclause_text": "Full text of subclause 1.1 with [Placeholders] and original newlines intact...",
-                        "drafting_note": "Explanation of this subclause's specific function, legal implications, and practical advice for customizing...",
                         "sub_subclauses": [
                             {{
                                 "sub_subclause_number": "1.1.1",
                                 "subclause_title": "[Title of the Sub-Sub-Clause, if any]",
                                 "sub_subclause_text": "Full text of sub-subclause 1.1.1 with [Placeholders] and original newlines intact...",
-                                "drafting_note": "Explanation of this sub-subclause's specific function, legal implications, and practical advice...",
                                 "sub_sub_subclauses": [
                                     {{
                                         "sub_sub_subclause_number": "1.1.1.1",
                                         "subclause_title": "[Title of the Sub-Sub-Sub-Clause, if any]",
                                         "sub_sub_subclause_text": "Full text of sub-sub-subclause 1.1.1.1 with [Placeholders] and original newlines intact...",
-                                        "drafting_note": "Explanation of this provision, legal implications, and implementation advice...",
                                         "alternatives": [
                                             {{
                                                 "alternative_text": "Alternative wording with newlines preserved...",
@@ -403,54 +400,25 @@ You must return the response ONLY in JSON format following this exact structure:
         ]
     }}
 
-**INSTRUCTIONS FOR POPULATING THE JSON:**
-1.  **NON-CLAUSE CONTENT**: Carefully analyze the beginning and end of the template text.
-    -   Populate the `general_sections` object with any content that is not part of a numbered clause.
-    -   `preamble`: Capture any introductory text.
-    -   `recitals`: Capture any "WHEREAS" clauses or background statements.
-    -   `definitions`: Capture the main definitions section if it's not a numbered clause.
-    -   `post_clause_content`: Capture any text that appears after the list of clauses but before the final signature/execution section. This could include schedules, annexes, or appendices that are not part of the main signature block.
-    -   `signature_block`: Capture the entire execution section, including signature lines and witness details.
-2.  **CLAUSE CONTENT**: Process all numbered/lettered clauses and place them in the `clauses` array, maintaining their original hierarchy and text.
-3.  **TITLES**: Capture the title for each clause and sub-clause in the `clause_title` and `subclause_title` fields respectively. If a sub-clause has no title, this field can be omitted or null.
-4.  **FORMATTING**: Preserve all original paragraph breaks and newlines within all text fields (like `clause_text`, `subclause_text`, `drafting_note`, etc.). The JSON string should contain `\n` characters for line breaks.
 
-**REQUIREMENTS FOR DRAFTING NOTES:**
+=== REQUIREMENTS ===
+1. Keep ALL original clause text exactly as written with [Placeholders] intact. Document all required placeholders with description.
+2. Preserve ALL paragraph breaks as \\n characters in JSON strings  
+3. Escape double quotes as \\" in JSON strings
+4. For drafting_note: explain legal meaning, purpose, placement, when to use, implications, best practices, risk assessment, and any other relevant information
+5. For alternatives: explain when to use instead of the main clause, legal implications, industry considerations, compliance
+6. Include title fields if clauses or subclauses have titles
+7. Process complete template - analyze beginning/end for general_sections content. Make sure the JSON has the content of a complete legal document.
+8. Maintain original hierarchy and numbering structure
 
-1. **For each clause, the drafting_note must explain:**
-   - The exact legal meaning and purpose of the clause
-   - Where this clause should be placed in the document
-   - When to use this clause vs alternatives
-   - Legal implications and consequences
-   - Best practices for implementation
-   - Risk assessment and mitigation strategies
 
-2. **For alternative clauses, explain:**
-   - When it should be used instead of the main clause
-   - Legal implications of each variation
-   - Industry-specific considerations
-   - Risk assessment compared to main clause
-   - Compliance implications
-
-3. **CLAUSE TYPES must be selected from this list (Keep Original Clauses but distribute them into the following categories):**
+=== CLAUSE TYPES (for each clause, select a clause from this list. Make sure it is exactly one of these.) ===
    - **Fundamental Clauses:** Payment Terms Clause, Scope of Work (Statement of Work) Clause, Term & Termination Clause, Price Adjustment / Escalation Clause
    - **Protective Clauses:** Indemnity Clause, Limitation of Liability Clause, Exemption / Exclusion Clause, Liquidated Damages Clause, Exculpatory Clause, Gross-Up Clause, Retention of Title (Romalpa) Clause
    - **Dispute Resolution Clauses:** Arbitration Clause, Dispute Resolution / Escalation Clause, Choice of Law Clause, Confession of Judgment Clause
    - **Confidentiality & IP Clauses:** Confidentiality / Non-Disclosure Clause, Intellectual Property Clause, Non-Compete Clause, Non-Solicitation Clause
    - **Operational (Boilerplate) Clauses:** Assignment Clause, Change Control / Changes Clause, Amendment Clause, Notice Clause, Severability Clause, Survival Clause, Entire Agreement Clause, Waiver Clause, Interpretation Clause, Electronic Signatures Clause
 
-4. **Ensure the template includes:**
-   - All necessary clauses from the uploaded contracts
-   - Complete legal document structure
-   - Logical clause ordering
-   - Comprehensive coverage of all legal aspects
-   - All placeholders properly identified
-
-5. **Placeholder Management:**
-   - Maintain ALL existing [Placeholder] formats
-   - Document all required placeholders with descriptions
-   - Specify data types and requirements
-   - Provide completion guidance
 
 **Template to enhance (follow exactly, do not change clauses):**
 {template_text}
@@ -502,7 +470,7 @@ You must return the response ONLY in JSON format following this exact structure:
             error_message = str(e)
             
         repair_prompt = f"""You are a JSON repair expert. The following text is a JSON response that has validation errors or is malformed.
-    Your task is to fix the JSON and return a properly formatted valid JSON object.
+    Your task is to fix the JSON and return a properly formatted valid JSON object. ONLY RETURN THE JSON RESPONSE, DO NOT WRITE ANYTHING ELSE THAN THE JSON RESPONSE LIKE EXPLANATION OR ANYTHING ELSE.
 
     Common JSON errors to fix:
     1. Missing quotes around keys or values
