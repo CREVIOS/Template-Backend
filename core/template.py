@@ -83,6 +83,40 @@ async def fetch_templates_from_db(
                 logger.warning(f"Skipping template {item.get('id', 'unknown')} due to data error: {str(e)}")
                 continue
         
+        # Fetch latest usage stats for all templates in a single query
+        if templates:
+            template_ids = [t.get("id") for t in templates if t.get("id")]
+            if template_ids:
+                # Get latest usage stats for each template using a more efficient query
+                usage_stats_result = await db.client.from_("template_usage_stats").select(
+                    "template_id, action_type, created_at"
+                ).in_("template_id", template_ids).order(
+                    "created_at", desc=True
+                ).execute()
+                
+                # Create a map of template_id to latest usage stats
+                latest_usage_stats = {}
+                if usage_stats_result.data:
+                    for stat in usage_stats_result.data:
+                        template_id = stat.get("template_id")
+                        if template_id not in latest_usage_stats:
+                            # First occurrence is the latest due to desc order
+                            latest_usage_stats[template_id] = {
+                                "last_action_type": stat.get("action_type"),
+                                "last_action_date": stat.get("created_at")
+                            }
+                
+                # Enrich template data with usage stats
+                for template_data in templates:
+                    template_id = template_data.get("id")
+                    if template_id in latest_usage_stats:
+                        stats = latest_usage_stats[template_id]
+                        template_data["last_action_type"] = stats["last_action_type"]
+                        template_data["last_action_date"] = stats["last_action_date"]
+                    else:
+                        template_data["last_action_type"] = None
+                        template_data["last_action_date"] = None
+        
         # Sort by created_at descending (latest first)
         # Parse timestamp strings for proper datetime sorting
         def parse_timestamp(timestamp_str):
@@ -225,8 +259,8 @@ async def get_templates(
                 folder_name=template_data.get("folder_name"),
                 folder_color=None,
                 files_count=0,  # Required field, must have default
-                last_action_type=None,
-                last_action_date=None,
+                last_action_type=template_data.get("last_action_type"),
+                last_action_date=template_data.get("last_action_date"),
 
             )
             templates.append(template)
