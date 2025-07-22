@@ -16,7 +16,8 @@ from core.models import (
     TemplatePreviewResponse,
     TemplateWithDetails,
     TemplatePreview,
-    ApiResponse
+    ApiResponse,
+    RenameTemplateRequest
 )
 from celery_tasks import template_generation_task, template_update_task
 from core.db_utilities import create_job, get_job_status as get_job_status_util
@@ -657,6 +658,91 @@ async def get_generation_status(
 # ============================================================================
 # TEMPLATE OPERATIONS
 # ============================================================================
+
+@router.delete("/{template_id}", response_model=ApiResponse)
+async def delete_template(
+    template_id: str,
+    user_id: str = Query(...),
+    db: DatabaseService = Depends(get_database_service),
+    cache: RedisCacheService = Depends(get_cache_service_dep)
+):
+    """Delete a template by ID"""
+    try:
+        # Verify template exists and user has access using an inner join
+        select_query = await db.client.from_("templates").select(
+            "id, folders!inner(user_id)"
+        ).eq("id", template_id).eq("folders.user_id", user_id).single().execute()
+
+        if not select_query.data:
+            raise HTTPException(status_code=404, detail="Template not found or access denied")
+
+        # Delete the template
+        delete_result = await db.client.from_("templates").delete().eq("id", template_id).execute()
+
+        if not delete_result.data:
+            raise HTTPException(status_code=500, detail="Failed to delete template")
+
+        # Invalidate cache for the user to reflect the change
+        await cache.invalidate_user_cache(user_id)
+        logger.info(f"Deleted template {template_id} for user {user_id} and invalidated cache.")
+        
+        # Track delete action
+        await track_template_usage(template_id, user_id, "deleted")
+
+        return ApiResponse(success=True, message="Template deleted successfully")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting template {template_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error deleting template: {str(e)}")
+
+@router.patch("/{template_id}/rename", response_model=ApiResponse)
+async def rename_template(
+    template_id: str,
+    request: RenameTemplateRequest,
+    user_id: str = Query(...),
+    db: DatabaseService = Depends(get_database_service),
+    cache: RedisCacheService = Depends(get_cache_service_dep)
+):
+    """Rename a template"""
+    try:
+        # Verify template exists and user has access
+        select_query = await db.client.from_("templates").select(
+            "id, name, folders!inner(user_id)"
+        ).eq("id", template_id).eq("folders.user_id", user_id).single().execute()
+
+        if not select_query.data:
+            raise HTTPException(status_code=404, detail="Template not found or access denied")
+            
+        old_name = select_query.data.get("name")
+
+        # Update the template name
+        update_result = await db.client.from_("templates").update(
+            {"name": request.name, "updated_at": datetime.utcnow().isoformat()}
+        ).eq("id", template_id).execute()
+
+        if not update_result.data:
+            raise HTTPException(status_code=500, detail="Failed to rename template")
+            
+        # Invalidate cache
+        await cache.invalidate_user_cache(user_id)
+        logger.info(f"Renamed template {template_id} from '{old_name}' to '{request.name}' for user {user_id} and invalidated cache.")
+
+        # Track rename action
+        await track_template_usage(template_id, user_id, "renamed", {
+            "old_name": old_name,
+            "new_name": request.name
+        })
+
+        return ApiResponse(success=True, message="Template renamed successfully", data={"new_name": request.name})
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error renaming template {template_id}: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error renaming template: {str(e)}")
+
 
 @router.put("/{template_id}")
 async def update_template_content(

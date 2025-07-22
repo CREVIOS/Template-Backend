@@ -180,6 +180,9 @@ class TemplateSearchRequest(BaseModel):
     limit: int = Field(default=50, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
 
+class RenameTemplateRequest(BaseModel):
+    name: str
+
 # Bulk Operations
 class TemplateBulkDeleteRequest(BaseModel):
     template_ids: List[UUID4] = Field(..., min_items=1, max_items=50)
