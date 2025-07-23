@@ -55,16 +55,44 @@ async def fetch_templates_from_db(
         db = get_database_service()
     
     try:
+        logger.debug(f"Making RPC call to get_user_templates for user: {user_id}")
+        
         # Use RPC to get user templates (properly filtered by user_id)
-        result = await db.client.rpc("get_user_templates", {"user_id": user_id}).execute()
+        result = await db.client.rpc("get_user_templates",
+                             {"p_user_id": user_id}).execute()
+        
+        logger.debug(f"RPC call completed. Result: {result}")
+        logger.debug(f"Result data: {result.data}")
+        logger.debug(f"Result count: {result.count}")
+        
+        # Check for RPC errors
+        if hasattr(result, 'error') and result.error:
+            logger.error(f"RPC call returned error: {result.error}")
+            return []
+        
+        logger.debug(f"Result data type: {type(result.data)}, Length: {len(result.data) if result.data else 0}")
 
         if not result.data:
+            logger.debug("No templates returned from RPC call")
+            # Try a direct query as a fallback test
+            logger.debug("Attempting direct query as fallback...")
+            try:
+                direct_result = await db.client.from_("templates").select(
+                    "*, folders!inner(user_id, name as folder_name)"
+                ).eq("folders.user_id", user_id).execute()
+                logger.debug(f"Direct query result: {len(direct_result.data) if direct_result.data else 0} templates")
+                if direct_result.data:
+                    logger.debug(f"Sample direct result: {direct_result.data[0]}")
+            except Exception as direct_error:
+                logger.debug(f"Direct query also failed: {direct_error}")
             return []
 
         # Process and sort results by created_at (latest first)
         templates = []
-        for item in result.data:
+        for i, item in enumerate(result.data):
             try:
+                logger.debug(f"Processing template {i+1}: ID={item.get('id')}, Name={item.get('name')}")
+                
                 template_data = {
                     "id": item.get("id"),
                     "folder_id": item.get("folder_id"),
@@ -77,14 +105,16 @@ async def fetch_templates_from_db(
                     "is_active": item.get("is_active"),
                     "created_at": item.get("created_at"),
                     "updated_at": item.get("updated_at"),
-                    "folder_name": item.get("folder_name")
+                    "folder_name": item.get("folder_name"),
+                    "files_count": item.get("files_count", 0),
+                    "status": item.get("status")
                 }
                 templates.append(template_data)
+                
             except Exception as e:
-                logger.warning(f"Skipping template {item.get('id', 'unknown')} due to data error: {str(e)}")
+                safe_log_error(f"Skipping template {item.get('id', 'unknown')} due to data error", e)
                 continue
-        
-        # Fetch latest usage stats for all templates in a single query
+
         if templates:
             template_ids = [t.get("id") for t in templates if t.get("id")]
             if template_ids:
@@ -117,9 +147,7 @@ async def fetch_templates_from_db(
                     else:
                         template_data["last_action_type"] = None
                         template_data["last_action_date"] = None
-        
-        # Sort by created_at descending (latest first)
-        # Parse timestamp strings for proper datetime sorting
+
         def parse_timestamp(timestamp_str):
             if not timestamp_str:
                 return datetime.min
@@ -128,20 +156,62 @@ async def fetch_templates_from_db(
                 if timestamp_str.endswith('+00'):
                     timestamp_str = timestamp_str[:-3] + '+00:00'
                 return datetime.fromisoformat(timestamp_str)
-            except (ValueError, TypeError):
-                logger.warning(f"Could not parse timestamp: {timestamp_str}")
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Could not parse timestamp: {timestamp_str} - {e}")
                 return datetime.min
         
         templates.sort(
             key=lambda t: parse_timestamp(t.get("created_at")), 
             reverse=True
         )
-
+        
+        logger.debug(f"Successfully processed {len(templates)} templates")
         return templates
 
     except Exception as e:
-        logger.error(f"Error fetching templates from DB: {str(e)}", exc_info=True)
+        # FIXED: Use safe logging instead of f-string
+        safe_log_error("Error fetching templates from DB", e, exc_info=True)
         return []
+
+# Fix for get_folder_files function (around line 999)
+@router.get("/folder/{folder_id}/files")
+async def get_folder_files(
+    folder_id: str,
+    user_id: str = Query(...),
+    db: DatabaseService = Depends(get_database_service)
+):
+    """Get files for a specific folder"""
+    try:
+        # Verify folder access
+        folder_response = await db.client.from_("folders").select(
+            "name, color"
+        ).eq("id", folder_id).eq("user_id", user_id).single().execute()
+        
+        if not folder_response.data:
+            raise HTTPException(status_code=404, detail="Folder not found")
+        
+        # Get files
+        files_response = await db.client.from_("files").select(
+            "*, file_info(*)"
+        ).eq("folder_id", folder_id).eq("user_id", user_id).order("created_at", desc=True).execute()
+        
+        files = files_response.data or []
+        folder_data = folder_response.data
+        
+        return {
+            "files": files,
+            "folder_name": folder_data.get("name"),
+            "folder_color": folder_data.get("color"),
+            "total_files": len(files)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        # FIXED: Use safe logging instead of f-string
+        safe_log_error("Error fetching folder files", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error fetching folder files: {str(e)}")
+
 
 # ============================================================================
 # TEMPLATE LISTING & RETRIEVAL
@@ -167,13 +237,14 @@ async def get_active_job_step(
         raise HTTPException(
             status_code=500, detail=f"Error getting active job step: {str(e)}")
 
+def safe_log_error(message: str, exception: Exception, **kwargs):
+    logger.opt(exception=exception).error("{}: {}", message, exception, **kwargs)
+
+
 @router.get("/", response_model=TemplatesResponse)
 async def get_templates(
     user_id: str = Query(...),
-    sort_field: str = Query(
-        "created_at",
-        pattern="^(name|folder_name|created_at)$"
-    ),
+    sort_field: str = Query("created_at", pattern="^(name|folder_name|created_at)$"),
     sort_direction: str = Query("desc", pattern="^(asc|desc)$"),
     search: Optional[str] = Query(None),
     folder_id: Optional[str] = Query(None),
@@ -259,10 +330,9 @@ async def get_templates(
                 updated_at=template_data.get("updated_at"),
                 folder_name=template_data.get("folder_name"),
                 folder_color=None,
-                files_count=0,  # Required field, must have default
+                files_count=template_data.get("files_count", 0),  
                 last_action_type=template_data.get("last_action_type"),
                 last_action_date=template_data.get("last_action_date"),
-
             )
             templates.append(template)
 
@@ -281,8 +351,10 @@ async def get_templates(
         return TemplatesResponse(templates=templates, total=len(templates))
 
     except Exception as e:
-        logger.error(f"Error fetching templates: {str(e)}", exc_info=True)
+        # FIXED: Use safe logging instead of f-string
+        safe_log_error("Error fetching templates", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching templates: {str(e)}")
+
 
 @router.get("/{template_id}", response_model=TemplatePreviewResponse)
 async def get_template_preview(
@@ -336,6 +408,7 @@ async def get_template_preview(
     except Exception as e:
         logger.error(f"Error fetching template: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching template: {str(e)}")
+
 
 # ============================================================================
 # CACHE MANAGEMENT
@@ -659,6 +732,11 @@ async def get_generation_status(
 # TEMPLATE OPERATIONS
 # ============================================================================
 
+
+# ============================================================================
+# TEMPLATE RENAMING AND DELETION
+# ============================================================================
+
 @router.delete("/{template_id}", response_model=ApiResponse)
 async def delete_template(
     template_id: str,
@@ -742,6 +820,11 @@ async def rename_template(
     except Exception as e:
         logger.error(f"Error renaming template {template_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error renaming template: {str(e)}")
+
+
+# ============================================================================
+# TEMPLATE CONTENT UPDATES
+# ============================================================================
 
 
 @router.put("/{template_id}")
@@ -1116,8 +1199,10 @@ async def get_folder_files(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error fetching folder files: {str(e)}", exc_info=True)
+        # FIXED: Use safe logging instead of f-string
+        safe_log_error("Error fetching folder files", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error fetching folder files: {str(e)}")
+
 
 # @router.get("/file/{file_id}/info")
 # async def get_file_info(
@@ -1491,3 +1576,4 @@ async def _update_content_json_from_template(template_content: str, template_nam
     except Exception as e:
         logger.warning(f"Failed to extract clauses for content_json update: {e}")
         return None
+
